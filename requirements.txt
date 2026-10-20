@@ -1,0 +1,40 @@
+# Azure AI Foundry Agent SDK
+azure-ai-projects>=1.0.0b5
+azure-ai-inference>=1.0.0b7
+azure-identity>=1.19.0
+
+# Azure AI Search
+azure-search-documents>=11.6.0b8
+
+# Azure Storage
+azure-storage-blob>=12.24.0
+
+# FastAPI
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.17
+
+# Document processing
+pypdf2>=3.0.1
+python-docx>=1.1.2
+openpyxl>=3.1.5
+
+# Telemetry
+opentelemetry-api>=1.29.0
+opentelemetry-sdk>=1.29.0
+opentelemetry-instrumentation-fastapi>=0.50b0
+azure-monitor-opentelemetry>=1.6.4
+azure-monitor-opentelemetry-exporter>=1.0.0b31
+
+# Auth
+pyjwt[crypto]>=2.10.0
+cryptography>=44.0.0
+
+# Utilities
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+pyyaml>=6.0.2
+python-dotenv>=1.0.1
+httpx>=0.28.0
+tiktoken>=0.8.0
+openai>=1.50.0

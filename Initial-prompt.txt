@@ -1,0 +1,211 @@
+
+You are a senior full-stack engineer and cloud solution architect. Implement a production-ready “RFP Response Agent” using Azure AI Foundry (code-first agent) grounded on an Azure AI Search index. The solution must ingest an RFP document, extract requirements/questions, retrieve relevant approved snippets from a curated knowledge base, draft responses in the required structure, generate a compliance matrix (Yes/No/Partial + evidence), and export outputs (DOCX + XLSX). It must include guardrails to prevent leakage of sensitive content (pricing, PII, customer names) and enforce document-level access control per user/project/client.
+
+PRIMARY GOALS
+1) Ingest RFP documents (PDF/DOCX) and extract:
+   - sections, requirements, evaluation criteria, “shall/must” statements, questions
+   - required response structure if specified in the RFP
+2) Retrieval-grounded drafting:
+   - connect agent to Azure AI Search index (vector + keyword hybrid)
+   - produce responses with citations (source_url + title) when possible
+3) Output assembly:
+   - generate a DOCX “Draft RFP Response” using a template
+   - generate an XLSX “Compliance Matrix” (Requirement → Meets? → Notes/Evidence → Source URL)
+4) Security and governance:
+   - sanitize/redact sensitive patterns (pricing, PII) during ingestion and before generation
+   - segment knowledge: enforce client/project/solution_area boundaries at retrieval time
+   - document-level access control (DLAC): only retrieve documents user is allowed to see
+5) Observability:
+   - enable tracing with OpenTelemetry + Application Insights (per Foundry tracing guidance)
+   - log tool calls, retrieval metadata, latency, token usage, and redaction events
+6) Developer experience:
+   - local dev (dotenv), CI (GitHub Actions), containerization (Docker)
+   - infra-as-code (Bicep preferred) for Search, Storage, App Insights, and App Service/Container Apps
+   - clear README with setup steps and environment variables
+
+TECH STACK
+- Language: Python 3.11+
+- API: FastAPI
+- Azure AI Foundry Agent Service SDK (code-first agent runtime)
+- Azure AI Search (vector index)
+- Storage: Azure Blob Storage for knowledge documents + RFP uploads
+- Identity: Entra ID (OIDC) for user auth; use user OID/group claims for DLAC security trimming
+- Telemetry: OpenTelemetry + Application Insights
+- Document tooling: python-docx for DOCX output, pypdf2 for PDF extraction, openpyxl for XLSX
+- Optional: simple React UI or just API endpoints + Swagger
+
+IMPORTANT PRODUCT GUIDANCE TO FOLLOW (treat as requirements)
+- “Less is more”: only index accurate, unique, relevant content; remove conflicting/duplicative sources.
+- Rotate/refresh source content to prevent outdated responses.
+- Sanitize source proposals: redact sensitive information like pricing and PII before indexing.
+- Prefer focused/segmented knowledge bases by product family / solution area / client.
+- Keep tone consistent and professional; enforce response structure and style.
+
+ARCHITECTURE OVERVIEW
+A) Knowledge ingestion pipeline:
+   - Upload curated docs to Blob Storage under:
+     /kb/{client_id}/{project_id}/{solution_area}/...
+   - Extract text, chunk, embed, and index into Azure AI Search.
+   - Index schema MUST include fields:
+     id (key)
+     content (searchable text)
+     contentVector (vector)
+     title (retrievable)
+     source_url (retrievable)  // used for citations
+     client_id (filterable)
+     project_id (filterable)
+     solution_area (filterable)
+     oids (Collection(String), filterable)    // user object IDs allowed
+     groups (Collection(String), filterable)  // group IDs allowed
+     redaction_level (filterable)
+     last_reviewed_date (filterable)
+   - DLAC enforcement:
+     Implement query-time security trimming:
+       filter includes user oid OR any group id (search.in or equivalent)
+     Also enforce segmentation filters:
+       client_id == request.client_id AND project_id == request.project_id
+   - Redaction during ingestion:
+     Apply regex-based redaction of:
+       currency/pricing patterns, email/phone/address, national IDs, bank info, etc.
+     Save both “original_metadata” and “sanitized_text” but only index sanitized_text.
+
+B) RFP intake pipeline:
+   - Endpoint: POST /rfp/upload
+     Accept PDF/DOCX, store in Blob, extract text.
+   - Endpoint: POST /rfp/extract
+     Return structured JSON:
+       { sections:[], requirements:[], questions:[], evaluation_criteria:[], response_instructions:{} }
+   - Identify “MUST/SHALL” lines and convert to normalized requirement objects:
+       { id, text, category, priority, source_section, keywords }
+
+C) Agent orchestration:
+   - Build an Azure AI Foundry agent with:
+     - Instructions: an “RFP Response Assistant” persona
+     - Tool: Azure AI Search tool connected to the index
+     - Strict grounding: never invent; if not found, say “Not provided in sources”
+     - Always produce structured JSON output for each question/requirement:
+       {
+         requirement_id,
+         answer_markdown,
+         meets: "Yes|Partial|No",
+         evidence: [ { title, source_url, quote } ],
+         assumptions: [],
+         risks: [],
+         followups: []
+       }
+   - Expose API endpoints:
+     POST /draft (input: rfp_id, client_id, project_id, solution_area, optional tone)
+       -> returns draft JSON + generated DOCX + XLSX links
+     POST /answer (input: single question + context filters)
+       -> returns grounded answer + citations
+   - Ensure retrieval queries include filters:
+     client_id, project_id, solution_area, and DLAC security trimming (oids/groups)
+   - Include a “citation hygiene” function:
+     Ensure citations are only from retrieved docs; no fabricated URLs.
+
+D) Output generation:
+   - DOCX:
+     Use a template file in /templates/rfp_response_template.docx with placeholders:
+       {{executive_summary}}, {{solution_overview}}, {{compliance_matrix_summary}}, etc.
+   - XLSX:
+     Sheet columns:
+       Requirement ID | Requirement Text | Priority | Meets (Yes/Partial/No) | Evidence/Notes | Source URL
+     Add data validation for Meets values.
+   - Store outputs in Blob under:
+     /outputs/{rfp_id}/draft.docx
+     /outputs/{rfp_id}/compliance.xlsx
+
+E) Guardrails:
+   - Pre-generation redaction pass on user inputs and retrieved snippets.
+   - Post-generation scan:
+     - Block if pricing-like strings or PII patterns appear.
+     - Block if customer names appear (provide allowlist mechanism).
+   - If blocked: return safe error + ask for human review (do not output the sensitive content).
+
+F) Tracing/observability:
+   - Integrate OpenTelemetry instrumentation for:
+     - agent runs
+     - tool calls (search queries + filters used)
+     - redaction events
+   - Send traces to Application Insights; include correlation IDs per request.
+   - Add /health and /metrics endpoints.
+
+PROJECT STRUCTURE (create this repo layout)
+/
+  app/
+    main.py (FastAPI entry)
+    auth/ (Entra ID JWT validation, extract oid/groups claims)
+    agents/
+      foundry_agent.py (create agent, run threads/runs)
+      prompts.py (system instructions, JSON schemas)
+      retrieval.py (query builder incl. DLAC + segmentation filters)
+    ingestion/
+      rfp_extract.py (PDF/DOCX parsing + requirement extraction)
+      kb_ingest.py (blob -> chunk -> embed -> index)
+      redaction.py (regex + configurable policies)
+    outputs/
+      docx_writer.py
+      xlsx_writer.py
+    telemetry/
+      tracing.py (OTel + AppInsights)
+    config.py (env vars)
+  infra/
+    main.bicep (Search, Storage, AppInsights, Managed Identity, hosting)
+  templates/
+    rfp_response_template.docx
+  tests/
+    test_redaction.py
+    test_requirement_extraction.py
+    test_security_filters.py
+    test_output_generation.py
+  .github/workflows/ci.yml
+  Dockerfile
+  docker-compose.yml (optional local Azurite)
+  README.md
+
+ENV VARS (document and use)
+FOUNDRY_PROJECT_ENDPOINT
+FOUNDRY_MODEL_DEPLOYMENT_NAME
+AZURE_AI_SEARCH_CONNECTION_NAME (or ID)
+AI_SEARCH_INDEX_NAME
+AZURE_STORAGE_ACCOUNT_URL + container names
+APPLICATIONINSIGHTS_CONNECTION_STRING
+ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_AUDIENCE (for JWT validation)
+(optional) EMBEDDING_MODEL_DEPLOYMENT_NAME
+
+IMPLEMENTATION DETAILS
+1) Use the Foundry agent service SDK patterns:
+   - Create agent with instructions and Azure AI Search tool connection
+   - Create thread, add message, run, poll until complete, return final message
+2) Use Azure AI Search query:
+   - Hybrid query: keyword + vector
+   - Always include filters for:
+     client_id, project_id, solution_area
+     AND (oids contains user_oid OR groups intersects user_groups)
+3) Chunking:
+   - Chunk by headings when possible; otherwise 800–1200 tokens w/ overlap
+   - Preserve source_url per chunk
+4) Redaction:
+   - Provide a YAML policy file (config/redaction_policy.yml) to tune patterns.
+5) Testing:
+   - Provide fixtures: sample RFP PDF/DOCX and sample KB docs.
+   - Unit tests must validate:
+     - redaction removes pricing/PII patterns
+     - security filter query contains correct oids/groups + segmentation filters
+     - compliance matrix is generated with expected columns and values
+
+DELIVERABLES
+- Working FastAPI service with endpoints:
+  POST /rfp/upload, POST /rfp/extract, POST /draft, POST /answer, GET /health
+- Bicep deployment
+- README with end-to-end run instructions
+- Example curl commands
+- Minimal demo script: scripts/demo.py that uploads an RFP and generates outputs
+
+QUALITY BAR
+- Do not hardcode secrets.
+- Avoid hallucinations: always ground answers; if missing, return “Not provided in sources.”
+- Outputs must be deterministic and structured (JSON schema validation).
+- Log/tracing must not store raw sensitive content; store hashes or redacted excerpts.
+
+Now implement this repository. Start by scaffolding the folder structure and minimal FastAPI app, then add ingestion, retrieval, agent orchestration, output generation, and finally infra + tests. Produce complete code files, not pseudocode. Where SDK APIs differ by version, prefer the latest Microsoft Learn guidance and keep dependencies pinned in pyproject.toml/requirements.txt.

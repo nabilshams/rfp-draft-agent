@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RFP Draft Agent</title>
+  <style>
+    :root { --primary:#0078d4; --primary-dark:#005a9e; --bg:#f5f5f5; --card-bg:#fff; --border:#e1e1e1; --text:#323130; --text-muted:#605e5c; --success:#107c10; --warning:#ffb900; --error:#d13438; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',-apple-system,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+    header{background:var(--primary);color:#fff;padding:14px 28px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 4px rgba(0,0,0,.1)}
+    header h1{font-size:18px;font-weight:600}
+    header .status{margin-left:auto;font-size:12px;display:flex;align-items:center;gap:5px}
+    header .dot{width:8px;height:8px;border-radius:50%;background:#6fc96f}
+    header .dot.offline{background:var(--error)}
+    .container{max-width:1200px;margin:0 auto;padding:20px}
+    .tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:20px;gap:0;overflow-x:auto}
+    .tab{padding:10px 20px;cursor:pointer;font-size:13px;font-weight:600;color:var(--text-muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s;white-space:nowrap}
+    .tab:hover{color:var(--primary)} .tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+    .tab-content{display:none} .tab-content.active{display:block}
+    .card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .card h2{font-size:15px;font-weight:600;margin-bottom:14px} .card h3{font-size:13px;font-weight:600;margin:14px 0 6px}
+    label{display:block;font-size:12px;font-weight:600;margin-bottom:3px}
+    input[type="text"],select,textarea{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;font-family:inherit;margin-bottom:10px}
+    input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+    textarea{resize:vertical;min-height:70px}
+    .form-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+    .btn{display:inline-flex;align-items:center;gap:5px;padding:7px 16px;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+    .btn-primary{background:var(--primary);color:#fff} .btn-primary:hover{background:var(--primary-dark)} .btn-primary:disabled{background:#c8c8c8;cursor:not-allowed}
+    .btn-secondary{background:#fff;color:var(--primary);border:1px solid var(--primary)} .btn-secondary:hover{background:#f0f6ff} .btn-sm{padding:4px 10px;font-size:12px}
+    .upload-zone{border:2px dashed var(--border);border-radius:8px;padding:30px;text-align:center;cursor:pointer;transition:.15s;margin-bottom:12px}
+    .upload-zone:hover,.upload-zone.dragover{border-color:var(--primary);background:#f0f6ff}
+    .upload-zone .icon{font-size:32px;margin-bottom:6px} .upload-zone p{color:var(--text-muted);font-size:13px}
+    .upload-zone .filename{margin-top:6px;font-weight:600;color:var(--primary)}
+    .result-box{background:#fafafa;border:1px solid var(--border);border-radius:6px;padding:14px;margin-top:10px;font-size:12px;max-height:400px;overflow-y:auto}
+    .result-box pre{white-space:pre-wrap;word-break:break-word;font-family:'Cascadia Code','Consolas',monospace;font-size:11px}
+    .req-list{list-style:none} .req-item{padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;gap:8px;align-items:flex-start}
+    .badge{padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600;white-space:nowrap}
+    .badge-mandatory{background:#fde7e9;color:var(--error)} .badge-preferred{background:#fff4ce;color:#8a6d00} .badge-standard{background:#e8f5e9;color:var(--success)}
+    .matrix-table{width:100%;border-collapse:collapse;font-size:12px}
+    .matrix-table th{background:var(--primary);color:#fff;padding:7px 10px;text-align:left;font-weight:600}
+    .matrix-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+    .meets-yes{color:var(--success);font-weight:600} .meets-partial{color:#8a6d00;font-weight:600} .meets-no{color:var(--error);font-weight:600}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #ccc;border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .loading{display:none;align-items:center;gap:7px;padding:10px 14px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;margin-top:10px;font-size:12px} .loading.visible{display:flex}
+    .toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;color:#fff;z-index:1000;transform:translateY(80px);opacity:0;transition:.3s}
+    .toast.visible{transform:translateY(0);opacity:1} .toast.success{background:var(--success)} .toast.error{background:var(--error)}
+    .download-links{display:flex;gap:10px;margin-top:14px}
+    .download-link{display:flex;align-items:center;gap:6px;padding:8px 14px;background:#f0f6ff;border:1px solid #b3d4fc;border-radius:6px;text-decoration:none;color:var(--primary);font-size:12px;font-weight:600} .download-link:hover{background:#dbe9ff}
+    .kb-doc-list{list-style:none} .kb-doc-item{padding:8px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;justify-content:space-between;align-items:center}
+    .kb-doc-item .doc-meta{color:var(--text-muted);font-size:11px}
+    .metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+    .metric-card{text-align:center;padding:14px;background:#f5f9ff;border-radius:8px;border:1px solid #d0e4ff}
+    .metric-card .value{font-size:28px;font-weight:700;color:var(--primary)} .metric-card .label{font-size:11px;color:var(--text-muted);margin-top:3px}
+    .template-info{display:flex;align-items:center;gap:12px;padding:12px;background:#f5f9ff;border:1px solid #d0e4ff;border-radius:6px;margin-bottom:12px;font-size:13px}
+    .log-scroll{background:#1e1e1e;color:#d4d4d4;border-radius:6px;padding:10px;font-family:'Cascadia Code','Consolas',monospace;font-size:11px;line-height:1.5;height:400px;overflow-y:auto}
+    .log-entry{padding:1px 0;border-bottom:1px solid #2a2a2a;display:flex;gap:6px;word-break:break-word} .log-entry:hover{background:#2a2d30}
+    .log-ts{color:#6a9955;white-space:nowrap;min-width:90px} .log-level{font-weight:700;white-space:nowrap;min-width:50px}
+    .log-level.INFO{color:#4ec9b0} .log-level.WARNING{color:#dcdcaa} .log-level.ERROR{color:#f44747} .log-level.DEBUG{color:#808080}
+    .log-msg{color:#d4d4d4;flex:1}
+    .logs-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+    .logs-toolbar input{flex:1;min-width:180px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px}
+    .ws-status{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)}
+    .ws-dot{width:7px;height:7px;border-radius:50%;background:var(--error)} .ws-dot.connected{background:var(--success)}
+  </style>
+</head>
+<body>
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+  <h1>RFP Draft Agent</h1>
+  <div class="status"><div class="dot" id="statusDot"></div><span id="statusText">Checking...</span></div>
+</header>
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" data-tab="kb">&#128218; Knowledge Base</div>
+    <div class="tab" data-tab="rfp">&#128196; RFP Response</div>
+    <div class="tab" data-tab="template">&#128221; Response Template</div>
+    <div class="tab" data-tab="ask">&#128172; Ask a Question</div>
+    <div class="tab" data-tab="logs">&#128203; Live Logs</div>
+    <div class="tab" data-tab="dashboard">&#128202; Dashboard</div>
+  </div>
+
+  <!-- KB -->
+  <div class="tab-content active" id="tab-kb">
+    <div class="card">
+      <h2>&#128218; Upload Reference Documents</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">Upload past RFPs, solution guides, capability docs. They will be indexed and used to ground responses.</p>
+      <div class="form-row">
+        <div><label>Client ID</label><input type="text" id="kbClientId" value="demo-client"></div>
+        <div><label>Project ID</label><input type="text" id="kbProjectId" value="demo-project"></div>
+        <div><label>Solution Area</label><input type="text" id="kbSolutionArea" value="general"></div>
+      </div>
+      <div class="upload-zone" id="kbUploadZone"><div class="icon">&#128193;</div><p>Drag &amp; drop reference documents, or <strong>click to browse</strong></p><p style="font-size:11px;color:#999;margin-top:3px">PDF and DOCX. Multiple files OK.</p><div class="filename" id="kbFileNames" style="display:none"></div></div>
+      <input type="file" id="kbFileInput" accept=".pdf,.docx" multiple style="display:none">
+      <button class="btn btn-primary" id="btnKbUpload" disabled>Upload &amp; Index</button>
+      <div class="loading" id="kbLoading"><div class="spinner"></div><span>Uploading and indexing...</span></div>
+      <div id="kbUploadResults"></div>
+    </div>
+    <div class="card">
+      <h2>&#128203; Indexed Documents</h2>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn btn-secondary btn-sm" id="btnKbRefresh">Refresh</button>
+        <button class="btn btn-primary btn-sm" id="btnKbReindex">Re-index All</button>
+      </div>
+      <div class="loading" id="reindexLoading"><div class="spinner"></div><span>Re-indexing all documents...</span></div>
+      <ul class="kb-doc-list" id="kbDocList"><li style="color:var(--text-muted);font-size:12px;padding:10px">Click Refresh to load...</li></ul>
+    </div>
+  </div>
+
+  <!-- RFP -->
+  <div class="tab-content" id="tab-rfp">
+    <div class="card">
+      <h2>Step 1: Upload the RFP</h2>
+      <div class="upload-zone" id="rfpUploadZone"><div class="icon">&#128196;</div><p>Drag &amp; drop the RFP you need to respond to</p><p style="font-size:11px;color:#999;margin-top:3px">PDF, DOCX, XLSX, or CSV</p><div class="filename" id="rfpFileName" style="display:none"></div></div>
+      <input type="file" id="rfpFileInput" accept=".pdf,.docx,.xlsx,.xls,.csv" style="display:none">
+      <button class="btn btn-primary" id="btnRfpUpload" disabled>Upload RFP</button>
+      <div class="loading" id="rfpUploadLoading"><div class="spinner"></div><span>Uploading...</span></div>
+    </div>
+    <div class="card" id="cardExtractPrompt" style="display:none">
+      <h2>Step 2: Extract Requirements</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">RFP uploaded successfully. Choose how to extract requirements:</p>
+      <div style="display:flex;gap:10px;margin-bottom:14px">
+        <label style="flex:1;display:flex;gap:8px;align-items:flex-start;padding:10px;border:2px solid var(--primary);border-radius:6px;cursor:pointer;background:#fff;font-weight:400;font-size:12px">
+          <input type="radio" name="extractMode" value="local" checked style="margin-top:2px">
+          <div>
+            <strong style="font-size:13px">Local Parsing</strong><br>
+            Fast, no AI calls. Uses column detection for Excel/CSV and regex for DOCX/PDF. Best for structured spreadsheets with clear headers.
+          </div>
+        </label>
+        <label style="flex:1;display:flex;gap:8px;align-items:flex-start;padding:10px;border:2px solid var(--border);border-radius:6px;cursor:pointer;background:#fff;font-weight:400;font-size:12px">
+          <input type="radio" name="extractMode" value="ai" style="margin-top:2px">
+          <div>
+            <strong style="font-size:13px">AI Extraction</strong><br>
+            Uses the AI agent to intelligently identify and structure requirements. Best for unstructured documents, complex RFPs, or when local parsing misses requirements.
+          </div>
+        </label>
+      </div>
+      <button class="btn btn-primary" id="btnExtract">Extract Requirements</button>
+      <div class="loading" id="extractLoading"><div class="spinner"></div><span>Extracting requirements...</span></div>
+    </div>
+    <div class="card" id="cardExtract" style="display:none">
+      <h2>Step 2: Extracted Requirements</h2>
+      <div id="extractSummary"></div>
+      <h3>Requirements <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(responses will appear under each requirement after drafting)</span></h3>
+      <div id="reqList"></div>
+      <div id="questionsSection" style="display:none"><h3>Questions Found</h3><div id="questionsList"></div></div>
+    </div>
+    <div class="card" id="cardDraft" style="display:none">
+      <h2>Step 3: Generate Responses</h2>
+      <div style="margin-bottom:10px">
+        <label>Common Context <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(applied to every requirement — e.g. company name, product, platform details)</span></label>
+        <textarea id="draftContext" rows="3" placeholder="e.g., We are responding as Contoso Ltd, offering the Contoso AI Platform built on Microsoft Azure. Our platform provides enterprise-grade AI agent orchestration, low-code/no-code agent creation, and seamless integration with Azure AI services."></textarea>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1"><label>Tone</label><select id="draftTone"><option value="professional">Professional</option><option value="formal">Formal</option><option value="concise">Concise</option><option value="technical">Technical</option></select></div>
+        <button class="btn btn-primary" id="btnDraft">Generate Responses</button>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Uses the approach configured in the <strong>Response Template</strong> tab. Current: <span id="currentApproachLabel">Per Requirement</span></p>
+      <div class="loading" id="draftLoading"><div class="spinner"></div><span>Generating RFP response... This may take 1-2 minutes.</span></div>
+    </div>
+    <div class="card" id="cardSectionNarratives" style="display:none">
+      <h2>Section Narratives</h2>
+      <div id="sectionNarrativesList"></div>
+    </div>
+    <div class="card" id="cardResults" style="display:none">
+      <h2>Step 4: Results</h2>
+      <div id="draftMeta" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
+      <div class="download-links" id="downloadLinks" style="display:none">
+        <a class="download-link" id="dlDocx" href="#" target="_blank">Download DOCX</a>
+        <a class="download-link" id="dlXlsx" href="#" target="_blank">Download XLSX</a>
+      </div>
+      <h3>Executive Summary</h3><div class="result-box" id="execSummary"></div>
+      <h3>Solution Overview</h3><div class="result-box" id="solOverview"></div>
+      <h3>Full JSON</h3><div class="result-box"><pre id="fullJson"></pre></div>
+    </div>
+  </div>
+
+  <!-- Template -->
+  <div class="tab-content" id="tab-template">
+    <div class="card">
+      <h2>&#128221; RFP Response Template</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">Upload a DOCX template used as the base for generated responses. Supports placeholders: <code>{{executive_summary}}</code>, <code>{{solution_overview}}</code>, <code>{{compliance_matrix_summary}}</code>.</p>
+      <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px">
+        <strong style="color:#8a6d00">&#9888; Template Formatting Tips</strong>
+        <ul style="margin:8px 0 0 16px;color:#605e5c;line-height:1.8">
+          <li>Use Word's built-in <strong>Heading styles</strong> (Heading 1, Heading 2, Heading 3) for section titles — not just bold or large text.</li>
+          <li>To apply: select the text, then choose <strong>Home &rarr; Styles &rarr; Heading 1/2/3</strong> in Word.</li>
+          <li>Add placeholders like <code>{{executive_summary}}</code> in the body where you want auto-generated content inserted.</li>
+          <li>Sections without Heading styles <strong>will not be detected</strong> by the parser.</li>
+          <li>Supported placeholders: <code>{{executive_summary}}</code>, <code>{{solution_overview}}</code>, <code>{{compliance_matrix_summary}}</code></li>
+        </ul>
+      </div>
+      <div class="template-info" id="templateInfo">Checking template status...</div>
+      <div class="upload-zone" id="tplUploadZone"><div class="icon">&#128221;</div><p>Drag &amp; drop a DOCX template, or <strong>click to browse</strong></p><div class="filename" id="tplFileName" style="display:none"></div></div>
+      <input type="file" id="tplFileInput" accept=".docx,.doc" style="display:none">
+      <button class="btn btn-primary" id="btnTplUpload" disabled>Upload Template</button>
+      <div class="loading" id="tplLoading"><div class="spinner"></div><span>Uploading template...</span></div>
+    </div>
+    <div class="card" id="cardTplSections" style="display:none">
+      <h2>Template Sections &amp; Prompts</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Each section has an editable prompt. Customize the prompt to control how the agent writes that section, then generate individually or all at once.</p>
+      <button class="btn btn-primary btn-sm" id="btnGenAllSections" style="margin-bottom:12px" onclick="generateAllSections()">Generate All Sections</button>
+      <div id="tplSectionsList"></div>
+    </div>
+    <div class="card">
+      <h2>Response Configuration</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">These settings apply when generating responses in the RFP Response tab.</p>
+      <div style="background:#f5f9ff;border:1px solid #d0e4ff;border-radius:6px;padding:12px;margin-bottom:14px">
+        <label style="margin-bottom:8px">Response Approach</label>
+        <div style="display:flex;gap:10px">
+          <label style="flex:1;display:flex;gap:8px;align-items:flex-start;padding:10px;border:2px solid var(--primary);border-radius:6px;cursor:pointer;background:#fff;font-weight:400;font-size:12px">
+            <input type="radio" name="approach" value="per_requirement" checked style="margin-top:2px" onchange="updateApproachLabel()">
+            <div>
+              <strong style="font-size:13px">Per Requirement</strong><br>
+              Process each requirement individually. Best for compliance-heavy RFPs.
+            </div>
+          </label>
+          <label style="flex:1;display:flex;gap:8px;align-items:flex-start;padding:10px;border:2px solid var(--border);border-radius:6px;cursor:pointer;background:#fff;font-weight:400;font-size:12px">
+            <input type="radio" name="approach" value="per_section" style="margin-top:2px" onchange="updateApproachLabel()">
+            <div>
+              <strong style="font-size:13px">Per Section</strong><br>
+              Classify requirements into template sections and generate narratives directly.
+              <span id="sectionApproachNote" style="color:var(--text-muted);font-size:11px"></span>
+            </div>
+          </label>
+          <label style="flex:1;display:flex;gap:8px;align-items:flex-start;padding:10px;border:2px solid var(--border);border-radius:6px;cursor:pointer;background:#fff;font-weight:400;font-size:12px">
+            <input type="radio" name="approach" value="map_reduce" style="margin-top:2px" onchange="updateApproachLabel()">
+            <div>
+              <strong style="font-size:13px">Map-Reduce &#11088;</strong><br>
+              Answer each requirement first, then synthesize into template sections. Best quality.
+              <span id="mapReduceNote" style="color:var(--text-muted);font-size:11px"></span>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="form-row">
+        <div><label>Client ID</label><input type="text" id="draftClientId" value="demo-client"></div>
+        <div><label>Project ID</label><input type="text" id="draftProjectId" value="demo-project"></div>
+        <div><label>Solution Area</label><input type="text" id="draftSolutionArea" value="general"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>&#128196; Generate RFP Response Document</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+        After generating responses in the <strong>RFP Response</strong> tab, come here to assemble them into a final document using your template.
+        The agent will organize requirement responses into the template sections and produce a cohesive RFP response draft.
+      </p>
+      <div id="docGenStatus" style="background:#f5f9ff;border:1px solid #d0e4ff;border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px">
+        <span id="docGenReqCount">No requirement responses available yet.</span>
+        <span id="docGenTplCount" style="margin-left:12px"></span>
+      </div>
+      <button class="btn btn-primary" id="btnGenDoc" disabled>Generate Document</button>
+      <div class="loading" id="docGenLoading"><div class="spinner"></div><span>Generating document from responses...</span></div>
+      <div id="docGenSections" style="display:none;margin-top:14px"></div>
+      <div class="download-links" id="docGenDownloads" style="display:none;margin-top:14px">
+        <a class="download-link" id="docGenDocx" href="#" target="_blank">Download DOCX</a>
+        <a class="download-link" id="docGenXlsx" href="#" target="_blank">Download XLSX</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ask -->
+  <div class="tab-content" id="tab-ask">
+    <div class="card">
+      <h2>&#128172; Ask a Grounded Question</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">Ask anything - the agent answers using only your indexed knowledge base.</p>
+      <label>Question</label><textarea id="askQuestion" rows="3" placeholder="e.g., Does your platform support multi-tenant architecture?"></textarea>
+      <div class="form-row">
+        <div><label>Client ID</label><input type="text" id="askClientId" value="demo-client"></div>
+        <div><label>Project ID</label><input type="text" id="askProjectId" value="demo-project"></div>
+        <div><label>Solution Area</label><input type="text" id="askSolutionArea" value="general"></div>
+      </div>
+      <button class="btn btn-primary" id="btnAsk">Ask Agent</button>
+      <div class="loading" id="askLoading"><div class="spinner"></div><span>Querying agent...</span></div>
+      <div id="answerBox" style="display:none;margin-top:14px"><h3>Answer</h3><div class="result-box" id="answerText"></div><h3>Full Response</h3><div class="result-box"><pre id="answerJson"></pre></div></div>
+    </div>
+  </div>
+
+  <!-- Logs -->
+  <div class="tab-content" id="tab-logs">
+    <div class="card">
+      <h2>&#128203; Live Application Logs</h2>
+      <div class="logs-toolbar">
+        <div class="ws-status"><div class="ws-dot" id="wsDot"></div><span id="wsStatus">Disconnected</span></div>
+        <input type="text" id="logFilter" placeholder="Filter logs...">
+        <span style="font-size:11px;color:var(--text-muted)" id="logCounter">0</span>
+        <button class="btn btn-secondary btn-sm" id="btnClearLogs">Clear</button>
+        <label style="font-size:11px;display:flex;align-items:center;gap:3px"><input type="checkbox" id="logAutoScroll" checked> Auto-scroll</label>
+      </div>
+      <div class="log-scroll" id="logScroll"></div>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="tab-content" id="tab-dashboard">
+    <div class="card"><h2>&#128202; Metrics</h2><div class="metrics-grid" id="metricsGrid"></div><button class="btn btn-secondary btn-sm" id="btnRefreshMetrics" style="margin-top:12px">Refresh</button></div>
+    <div class="card"><h2>Health</h2><div class="result-box" id="healthResult"></div></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const API=location.origin;let currentRfpId=null,currentFilename=null;
+function normReqId(id){return String(id ?? '').trim()}
+function respDomId(id){return 'resp-' + encodeURIComponent(normReqId(id))}
+function blockDomId(id){return 'req-block-' + encodeURIComponent(normReqId(id))}
+document.querySelectorAll('.tab').forEach(tab=>{tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).classList.add('active');if(tab.dataset.tab==='dashboard')loadDashboard();if(tab.dataset.tab==='logs')connectLogWs();if(tab.dataset.tab==='template')loadTemplateInfo();if(tab.dataset.tab==='kb')loadKbList()})});
+function toast(msg,type='success'){const el=document.getElementById('toast');el.textContent=msg;el.className='toast '+type+' visible';setTimeout(()=>el.classList.remove('visible'),3500)}
+async function checkHealth(){try{const r=await fetch(API+'/health');await r.json();document.getElementById('statusDot').classList.remove('offline');document.getElementById('statusText').textContent='Connected'}catch{document.getElementById('statusDot').classList.add('offline');document.getElementById('statusText').textContent='Offline'}}checkHealth();setInterval(checkHealth,30000);
+function escHtml(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
+function setupDragDrop(zId,iId,cb){const z=document.getElementById(zId),i=document.getElementById(iId);z.addEventListener('click',()=>i.click());z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('dragover')});z.addEventListener('dragleave',()=>z.classList.remove('dragover'));z.addEventListener('drop',e=>{e.preventDefault();z.classList.remove('dragover');if(e.dataTransfer.files.length){i.files=e.dataTransfer.files;cb(i.files)}});i.addEventListener('change',()=>{if(i.files.length)cb(i.files)})}
+
+// KB
+setupDragDrop('kbUploadZone','kbFileInput',files=>{const el=document.getElementById('kbFileNames');el.textContent=Array.from(files).map(f=>f.name).join(', ');el.style.display='block';document.getElementById('btnKbUpload').disabled=false});
+document.getElementById('btnKbUpload').addEventListener('click',async()=>{const files=document.getElementById('kbFileInput').files;if(!files.length)return;const ld=document.getElementById('kbLoading');ld.classList.add('visible');document.getElementById('btnKbUpload').disabled=true;const res=[];for(const file of files){const fd=new FormData();fd.append('file',file);fd.append('client_id',document.getElementById('kbClientId').value);fd.append('project_id',document.getElementById('kbProjectId').value);fd.append('solution_area',document.getElementById('kbSolutionArea').value);try{const r=await fetch(API+'/kb/upload',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const d=await r.json();res.push('OK: '+file.name+' ('+d.indexed_chunks+' chunks)')}catch(err){res.push('FAIL: '+file.name+': '+err.message)}}ld.classList.remove('visible');document.getElementById('btnKbUpload').disabled=false;document.getElementById('kbUploadResults').innerHTML='<div class="result-box" style="margin-top:10px">'+res.join('<br>')+'</div>';toast(res.length+' file(s) processed');loadKbList()});
+async function loadKbList(){
+  try{
+    const r=await fetch(API+'/kb/list');const d=await r.json();
+    const list=document.getElementById('kbDocList');
+    if(!d.documents.length){list.innerHTML='<li style="color:var(--text-muted);font-size:12px;padding:10px">No documents indexed yet.</li>';return}
+    list.innerHTML=d.documents.map(doc=>
+      '<li class="kb-doc-item">' +
+        '<div style="flex:1"><strong>'+escHtml(doc.filename)+'</strong>' +
+          '<div class="doc-meta">'+escHtml(doc.client_id)+' / '+escHtml(doc.project_id)+' / '+escHtml(doc.solution_area)+' &middot; '+(doc.size_bytes/1024).toFixed(1)+' KB' +
+          (doc.last_modified ? ' &middot; '+new Date(doc.last_modified).toLocaleDateString() : '') +
+          '</div>' +
+        '</div>' +
+        '<button class="btn btn-sm" style="background:#fde7e9;color:var(--error);border:1px solid var(--error)" onclick="deleteKbDoc(\''+escHtml(doc.blob_name).replace(/'/g,"\\'")+'\')">Delete</button>' +
+      '</li>'
+    ).join('');
+  }catch(err){document.getElementById('kbDocList').innerHTML='<li style="color:var(--error)">Error: '+err.message+'</li>'}
+}
+document.getElementById('btnKbRefresh').addEventListener('click',loadKbList);
+
+async function deleteKbDoc(blobName){
+  if(!confirm('Delete "'+blobName+'" and remove its indexed chunks?')) return;
+  try{
+    const r=await fetch(API+'/kb/delete?blob_name='+encodeURIComponent(blobName),{method:'DELETE'});
+    if(!r.ok) throw new Error(await r.text());
+    const d=await r.json();
+    toast('Deleted: '+d.deleted_chunks+' chunks removed');
+    loadKbList();
+  }catch(err){ toast('Delete failed: '+err.message,'error'); }
+}
+
+document.getElementById('btnKbReindex').addEventListener('click',async()=>{
+  if(!confirm('Re-index ALL documents in the knowledge base? This may take a while.')) return;
+  const ld=document.getElementById('reindexLoading');
+  ld.classList.add('visible');
+  document.getElementById('btnKbReindex').disabled=true;
+  try{
+    const r=await fetch(API+'/kb/reindex',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const d=await r.json();
+    toast('Re-indexed '+d.documents+' docs, '+d.total_chunks+' chunks');
+    loadKbList();
+  }catch(err){ toast('Re-index failed: '+err.message,'error'); }
+  finally{ ld.classList.remove('visible'); document.getElementById('btnKbReindex').disabled=false; }
+});
+
+// RFP
+let extractedRequirements = [];
+let generatedResponses = [];  // stores per-requirement responses for doc generation
+let generatedSectionNarratives = []; // stores section narratives for per_section doc generation
+let extractedQuestions = [];
+let extractedEvaluationCriteria = [];
+setupDragDrop('rfpUploadZone','rfpFileInput',files=>{document.getElementById('rfpFileName').textContent=files[0].name+' ('+(files[0].size/1024).toFixed(1)+' KB)';document.getElementById('rfpFileName').style.display='block';document.getElementById('btnRfpUpload').disabled=false});
+
+document.getElementById('btnExtract').addEventListener('click', async () => {
+  const ld = document.getElementById('extractLoading');
+  const mode = document.querySelector('input[name="extractMode"]:checked').value;
+  ld.querySelector('span').textContent = mode === 'ai' ? 'AI is extracting requirements...' : 'Parsing document locally...';
+  ld.classList.add('visible');
+  document.getElementById('btnExtract').disabled = true;
+  await extractReqs(mode);
+  ld.classList.remove('visible');
+});
+document.getElementById('btnRfpUpload').addEventListener('click',async()=>{const file=document.getElementById('rfpFileInput').files[0];if(!file)return;const ld=document.getElementById('rfpUploadLoading');ld.classList.add('visible');document.getElementById('btnRfpUpload').disabled=true;try{const fd=new FormData();fd.append('file',file);const r=await fetch(API+'/rfp/upload',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const data=await r.json();currentRfpId=data.rfp_id;currentFilename=data.filename;toast('RFP uploaded! ID: '+currentRfpId);
+    // Show extract button instead of auto-extracting
+    document.getElementById('cardExtractPrompt').style.display='block';
+    document.getElementById('cardExtractPrompt').scrollIntoView({behavior:'smooth'});
+  }catch(err){toast('Upload failed: '+err.message,'error');document.getElementById('btnRfpUpload').disabled=false}finally{ld.classList.remove('visible')}});
+
+async function extractReqs(mode){
+  mode = mode || 'local';
+  const card=document.getElementById('cardExtract');card.style.display='block';
+  card.scrollIntoView({behavior:'smooth'});
+  try{
+    const extractUrl = mode === 'ai' ? API+'/rfp/extract-ai' : API+'/rfp/extract';
+    const r=await fetch(extractUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rfp_id:currentRfpId,filename:currentFilename})});
+    if(!r.ok) throw new Error(await r.text());
+    const d=await r.json();
+    extractedRequirements = (d.requirements || []).map((r, i) => ({
+      ...r,
+      id: normReqId(r.id || ('R' + (i + 1)))
+    }));
+    extractedQuestions = d.questions || [];
+    extractedEvaluationCriteria = d.evaluation_criteria || [];
+
+    document.getElementById('extractSummary').innerHTML=
+      '<div style="display:flex;gap:14px;font-size:12px;color:var(--text-muted)">' +
+      '<span><strong>'+(d.sections?.length||0)+'</strong> Sections</span>' +
+      '<span><strong>'+extractedRequirements.length+'</strong> Requirements</span>' +
+      '<span><strong>'+(d.questions?.length||0)+'</strong> Questions</span></div>';
+
+    // Render requirements with response slots
+    const rl=document.getElementById('reqList'); rl.innerHTML='';
+    extractedRequirements.forEach((req,i) => {
+      const bc = req.priority==='mandatory'?'badge-mandatory':req.priority==='preferred'?'badge-preferred':'badge-standard';
+      const cat = req.category ? ' <span style="color:var(--text-muted);font-size:10px">['+escHtml(req.category)+']</span>' : '';
+      rl.innerHTML +=
+        '<div class="req-block" id="'+blockDomId(req.id)+'" style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">' +
+          '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
+            '<span style="font-weight:700;color:var(--primary);min-width:40px;font-size:12px">'+escHtml(req.id)+'</span>' +
+            '<span class="badge '+bc+'" style="margin-top:1px">'+escHtml(req.priority)+'</span>' + cat +
+            '<span style="flex:1;font-size:12px">'+escHtml(req.text)+'</span>' +
+          '</div>' +
+          '<div class="req-response" id="'+respDomId(req.id)+'" style="padding:10px 12px;font-size:12px;color:var(--text-muted);display:none">' +
+            '<em>Response will appear here after draft generation...</em>' +
+          '</div>' +
+        '</div>';
+    });
+
+    if(d.questions?.length){
+      document.getElementById('questionsSection').style.display='block';
+      const ql=document.getElementById('questionsList'); ql.innerHTML='';
+      d.questions.forEach((q,i)=>{
+        ql.innerHTML +=
+          '<div class="req-block" id="req-block-q'+i+'" style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">' +
+            '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
+              '<span style="font-weight:700;color:#8a6d00;min-width:40px;font-size:12px">Q'+(i+1)+'</span>' +
+              '<span style="flex:1;font-size:12px">'+escHtml(q)+'</span>' +
+            '</div>' +
+            '<div class="req-response" id="resp-q'+i+'" style="padding:10px 12px;font-size:12px;color:var(--text-muted);display:none">' +
+              '<em>Response will appear here...</em>' +
+            '</div>' +
+          '</div>';
+      });
+    }
+
+    toast('Extracted '+extractedRequirements.length+' requirements');
+    document.getElementById('cardDraft').style.display='block';
+    updateApproachLabel();
+    if (templateSectionsData.length) {
+      renderTemplateSections(templateSectionsData);
+    }
+  } catch(err){ toast('Extraction failed: '+err.message,'error'); }
+}
+
+document.getElementById('btnDraft').addEventListener('click', async () => {
+  const ld = document.getElementById('draftLoading');
+  const btn = document.getElementById('btnDraft');
+  ld.classList.add('visible');
+  btn.disabled = true;
+
+  // Reset responses and show all response slots as "processing..."
+  generatedResponses = [];
+  generatedSectionNarratives = [];
+  updateDocGenStatus();
+  extractedRequirements.forEach(req => {
+    const el = document.getElementById(respDomId(req.id));
+    if (el) { el.style.display = 'block'; el.innerHTML = '<em style="color:var(--text-muted)">Waiting to process...</em>'; }
+  });
+
+  const selectedApproach = document.querySelector('input[name="approach"]:checked').value;
+
+  const body = JSON.stringify({
+    rfp_id: currentRfpId,
+    client_id: document.getElementById('draftClientId').value,
+    project_id: document.getElementById('draftProjectId').value,
+    solution_area: document.getElementById('draftSolutionArea').value,
+    tone: document.getElementById('draftTone').value,
+    approach: selectedApproach,
+    context: document.getElementById('draftContext').value.trim(),
+    requirements: extractedRequirements
+  });
+
+  let processed = 0;
+  let totalReqs = extractedRequirements.length;
+
+  try {
+    const response = await fetch(API + '/draft/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body
+    });
+
+    if (!response.ok) throw new Error(await response.text());
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.substring(6));
+
+          if (event.type === 'start') {
+            totalReqs = event.total;
+            if (event.approach === 'per_section') {
+              ld.querySelector('span').textContent = 'Step 1: Classifying requirements into template sections...';
+            } else {
+              ld.querySelector('span').textContent = 'Processing requirement 1 of ' + totalReqs + '...';
+              if (extractedRequirements.length > 0) {
+                const firstReq = extractedRequirements[0];
+                const firstEl = document.getElementById(respDomId(firstReq.id));
+                if (firstEl) {
+                  firstEl.innerHTML = '<div style="display:flex;align-items:center;gap:6px"><div class="spinner"></div><em>Processing...</em></div>';
+                }
+              }
+            }
+          }
+
+          if (event.type === 'phase') {
+            const ph = event.data;
+            ld.querySelector('span').textContent = 'Phase ' + ph.phase + ': ' + ph.description + '...';
+          }
+
+          if (event.type === 'section_map') {
+            const map = event.data;
+            ld.querySelector('span').textContent = 'Generating section narratives...';
+            // Show the section mapping
+            const card = document.getElementById('cardSectionNarratives');
+            card.style.display = 'block';
+            const list = document.getElementById('sectionNarrativesList');
+            list.innerHTML = '<div style="margin-bottom:12px;font-size:12px;color:var(--text-muted)">Requirements mapped to sections:</div>';
+            for (const [sec, ids] of Object.entries(map)) {
+              list.innerHTML += '<div style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px">' +
+                '<strong style="font-size:13px">' + escHtml(sec) + '</strong>' +
+                '<span style="font-size:11px;color:var(--text-muted);margin-left:8px">' + ids.length + ' requirements: ' + ids.join(', ') + '</span>' +
+                '<div class="section-content" id="section-' + escHtml(sec).replace(/\s+/g,'-') + '" style="margin-top:8px;display:none"></div>' +
+                '</div>';
+            }
+          }
+
+          if (event.type === 'section_narrative') {
+            const sec = event.data;
+            generatedSectionNarratives.push(sec);
+            updateDocGenStatus();
+            ld.querySelector('span').textContent = 'Generated: ' + sec.section_name;
+            const secEl = document.getElementById('section-' + sec.section_name.replace(/\s+/g,'-'));
+            if (secEl) {
+              secEl.style.display = 'block';
+              secEl.innerHTML = '<div style="font-size:12px;line-height:1.7;padding:8px;background:#fafafa;border-radius:4px">' +
+                escHtml(sec.narrative_markdown || '') + '</div>';
+              secEl.closest('div')?.scrollIntoView({behavior:'smooth', block:'center'});
+            }
+          }
+
+          if (event.type === 'requirement_started') {
+            const reqProgress = event.data || {};
+            const reqId = reqProgress.requirement_id;
+            const reqIndex = reqProgress.index || 0;
+            const reqTotal = reqProgress.total || totalReqs;
+            ld.querySelector('span').textContent = 'Compliance check ' + reqIndex + ' of ' + reqTotal + '...';
+            if (reqId) {
+              const domId = respDomId(reqId);
+              const reqEl = document.getElementById(domId);
+              console.log('[RFP-TRACE] requirement_started', {
+                requirement_id: reqId,
+                dom_id: domId,
+                found: !!reqEl,
+                index: reqIndex,
+                total: reqTotal
+              });
+              if (reqEl) {
+                reqEl.style.display = 'block';
+                reqEl.innerHTML = '<div style="display:flex;align-items:center;gap:6px"><div class="spinner"></div><em>Processing...</em></div>';
+              }
+            }
+          }
+
+          if (event.type === 'response') {
+            processed++;
+            const resp = event.data;
+            const respId = resp?.requirement_id;
+            const respDom = respDomId(respId);
+            const respEl = document.getElementById(respDom);
+            console.log('[RFP-TRACE] response_event', {
+              requirement_id: respId,
+              dom_id: respDom,
+              found: !!respEl,
+              meets: resp?.meets,
+              processed,
+              total: totalReqs,
+              approach: selectedApproach
+            });
+            if (selectedApproach === 'per_section') {
+              ld.querySelector('span').textContent = 'Compliance check ' + processed + ' of ' + totalReqs + '...';
+            } else {
+              ld.querySelector('span').textContent = 'Processed ' + processed + ' of ' + totalReqs + ' requirements...';
+            }
+            renderSingleResponse(resp);
+            generatedResponses.push(resp);
+            updateDocGenStatus();
+            if (selectedApproach !== 'per_section' && processed < totalReqs) {
+              const nextReq = extractedRequirements[processed];
+              if (nextReq) {
+                const nextEl = document.getElementById(respDomId(nextReq.id));
+                if (nextEl) { nextEl.innerHTML = '<div style="display:flex;align-items:center;gap:6px"><div class="spinner"></div><em>Processing...</em></div>'; }
+              }
+            }
+          }
+
+          if (event.type === 'error') {
+            throw new Error(event.message || 'Unknown draft stream error');
+          }
+
+          if (event.type === 'complete') {
+            const card = document.getElementById('cardResults');
+            card.style.display = 'block';
+            if (event.outputs) {
+              document.getElementById('downloadLinks').style.display = 'flex';
+              document.getElementById('dlDocx').href = API + '/outputs/' + currentRfpId + '/draft.docx';
+              document.getElementById('dlXlsx').href = API + '/outputs/' + currentRfpId + '/compliance.xlsx';
+            }
+            document.getElementById('draftMeta').textContent = processed + ' requirements processed (' + selectedApproach.replace('_',' ') + ')';
+            toast('Draft complete! ' + processed + ' responses generated.');
+          }
+        } catch (parseErr) { /* skip malformed events */ }
+      }
+    }
+  } catch (err) {
+    toast('Draft failed: ' + err.message, 'error');
+  } finally {
+    ld.classList.remove('visible');
+    btn.disabled = false;
+  }
+});
+
+function renderSingleResponse(resp) {
+  const domId = respDomId(resp.requirement_id);
+  const el = document.getElementById(domId);
+  if (!el) {
+    console.warn('[RFP-TRACE] renderSingleResponse_no_target', {
+      requirement_id: resp?.requirement_id,
+      dom_id: domId,
+      available_ids_sample: extractedRequirements.slice(0, 10).map(r => ({ req_id: r.id, dom_id: respDomId(r.id) }))
+    });
+    return;
+  }
+  console.log('[RFP-TRACE] renderSingleResponse_ok', {
+    requirement_id: resp?.requirement_id,
+    dom_id: domId,
+    meets: resp?.meets
+  });
+  el.style.display = 'block';
+
+  const mc = resp.meets === 'Yes' ? 'meets-yes' : resp.meets === 'Partial' ? 'meets-partial' : 'meets-no';
+  const evHtml = (resp.evidence || []).map(e =>
+    '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' +
+    (e.source_url ? '<a href="' + escHtml(e.source_url) + '" target="_blank" style="color:var(--primary)">' + escHtml(e.title || 'Source') + '</a>' : escHtml(e.title || '')) +
+    (e.quote ? ' &mdash; <em>"' + escHtml(e.quote.substring(0, 150)) + '"</em>' : '') +
+    '</li>'
+  ).join('');
+  const assumeHtml = (resp.assumptions || []).length ? '<div style="margin-top:6px"><strong style="font-size:11px">Assumptions:</strong> <span style="font-size:11px">' + resp.assumptions.map(a => escHtml(a)).join('; ') + '</span></div>' : '';
+  const riskHtml = (resp.risks || []).length ? '<div style="margin-top:4px"><strong style="font-size:11px">Risks:</strong> <span style="font-size:11px;color:var(--error)">' + resp.risks.map(a => escHtml(a)).join('; ') + '</span></div>' : '';
+
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+      '<span style="font-weight:700;font-size:13px" class="' + mc + '">' + resp.meets + '</span>' +
+      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' +
+    '</div>' +
+    '<div style="font-size:12px;line-height:1.6;margin-bottom:6px">' + escHtml(resp.answer_markdown || '') + '</div>' +
+    (evHtml ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evHtml + '</ul></div>' : '') +
+    assumeHtml + riskHtml;
+
+  // Scroll to this requirement
+  el.closest('.req-block')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function showResults(data){
+  const card=document.getElementById('cardResults');card.style.display='block';
+  const draft=data.draft||{};
+  document.getElementById('draftMeta').textContent='RFP: '+data.rfp_id+' | '+data.elapsed_seconds+'s | '+(draft.responses?.length||0)+' responses';
+  if(data.outputs){
+    document.getElementById('downloadLinks').style.display='flex';
+    document.getElementById('dlDocx').href=API+'/outputs/'+data.rfp_id+'/draft.docx';
+    document.getElementById('dlXlsx').href=API+'/outputs/'+data.rfp_id+'/compliance.xlsx';
+  }
+  document.getElementById('execSummary').textContent=draft.executive_summary||'Not provided';
+  document.getElementById('solOverview').textContent=draft.solution_overview||'Not provided';
+  document.getElementById('fullJson').textContent=JSON.stringify(data,null,2);
+
+  // Populate inline responses under each requirement
+  const responseMap = {};
+  (draft.responses||[]).forEach(resp => { responseMap[resp.requirement_id] = resp; });
+
+  extractedRequirements.forEach(req => {
+    const el = document.getElementById(respDomId(req.id));
+    if (!el) return;
+    const resp = responseMap[req.id];
+    el.style.display = 'block';
+    if (!resp) {
+      el.innerHTML = '<div style="color:var(--error)"><em>No response generated for this requirement.</em></div>';
+      return;
+    }
+    const mc = resp.meets==='Yes'?'meets-yes':resp.meets==='Partial'?'meets-partial':'meets-no';
+    const evHtml = (resp.evidence||[]).map(e =>
+      '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' +
+      (e.source_url ? '<a href="'+escHtml(e.source_url)+'" target="_blank" style="color:var(--primary)">'+escHtml(e.title||'Source')+'</a>' : escHtml(e.title||'')) +
+      (e.quote ? ' &mdash; <em>"'+escHtml(e.quote.substring(0,150))+'"</em>' : '') +
+      '</li>'
+    ).join('');
+    const assumeHtml = (resp.assumptions||[]).length ? '<div style="margin-top:6px"><strong style="font-size:11px">Assumptions:</strong> <span style="font-size:11px">'+resp.assumptions.map(a=>escHtml(a)).join('; ')+'</span></div>' : '';
+    const riskHtml = (resp.risks||[]).length ? '<div style="margin-top:4px"><strong style="font-size:11px">Risks:</strong> <span style="font-size:11px;color:var(--error)">'+resp.risks.map(a=>escHtml(a)).join('; ')+'</span></div>' : '';
+
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+        '<span style="font-weight:700;font-size:13px" class="'+mc+'">'+resp.meets+'</span>' +
+        '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' +
+      '</div>' +
+      '<div style="font-size:12px;line-height:1.6;margin-bottom:6px">'+escHtml(resp.answer_markdown||'')+'</div>' +
+      (evHtml ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">'+evHtml+'</ul></div>' : '') +
+      assumeHtml + riskHtml;
+  });
+
+  // Scroll to the first requirement to show responses
+  document.getElementById('cardExtract').scrollIntoView({behavior:'smooth'});
+}
+
+// Doc Generation Status
+function updateDocGenStatus() {
+  const el = document.getElementById('docGenReqCount');
+  const btn = document.getElementById('btnGenDoc');
+  const selectedApproach = document.querySelector('input[name="approach"]:checked')?.value || 'per_requirement';
+  const hasRequirementResponses = generatedResponses.length > 0;
+  const hasSectionNarratives = generatedSectionNarratives.length > 0;
+
+  if (selectedApproach === 'per_section') {
+    if (hasRequirementResponses || hasSectionNarratives) {
+      if (hasSectionNarratives) {
+        el.innerHTML = '<strong style="color:var(--success)">' + generatedSectionNarratives.length + '</strong> section narratives available.';
+      } else {
+        el.innerHTML = '<strong style="color:var(--success)">' + generatedResponses.length + '</strong> requirement responses available.';
+      }
+      btn.disabled = false;
+    } else {
+      el.textContent = 'No section narratives or requirement responses available yet.';
+      btn.disabled = true;
+    }
+    return;
+  }
+
+  if (hasRequirementResponses) {
+    el.innerHTML = '<strong style="color:var(--success)">' + generatedResponses.length + '</strong> requirement responses available.';
+    btn.disabled = false;
+  } else {
+    el.textContent = 'No requirement responses available yet.';
+    btn.disabled = true;
+  }
+}
+
+
+document.getElementById('btnGenDoc').addEventListener('click', async () => {
+  const selectedApproach = document.querySelector('input[name="approach"]:checked')?.value || 'per_requirement';
+  const hasSectionData = selectedApproach === 'per_section' && generatedSectionNarratives.length > 0;
+  if (!generatedResponses.length && !hasSectionData) return toast('Generate responses or section narratives first.', 'error');
+  if (!currentRfpId) return toast('No RFP uploaded.', 'error');
+
+  const ld = document.getElementById('docGenLoading');
+  const btn = document.getElementById('btnGenDoc');
+  ld.classList.add('visible');
+  btn.disabled = true;
+
+  try {
+    const r = await fetch(API + '/draft/generate-doc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rfp_id: currentRfpId,
+        responses: generatedResponses,
+        section_narratives: generatedSectionNarratives,
+        approach: selectedApproach,
+        client_id: document.getElementById('draftClientId').value,
+        project_id: document.getElementById('draftProjectId').value,
+        solution_area: document.getElementById('draftSolutionArea').value,
+        tone: document.getElementById('draftTone')?.value || 'professional',
+      })
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        const parsed = JSON.parse(detail);
+        detail = parsed.detail || parsed.message || detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    const data = await r.json();
+
+    // Show section narratives if available
+    if (data.sections?.length) {
+      const secDiv = document.getElementById('docGenSections');
+      secDiv.style.display = 'block';
+      secDiv.innerHTML = '<h3>Document Sections</h3>' + data.sections.map(s =>
+        '<div style="border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">' +
+          '<strong>' + escHtml(s.section_name) + '</strong>' +
+          '<span style="font-size:11px;color:var(--text-muted);margin-left:8px">' + (s.requirement_ids?.length || 0) + ' requirements</span>' +
+          '<div style="font-size:12px;line-height:1.6;margin-top:6px;background:#fafafa;padding:8px;border-radius:4px">' + escHtml(s.narrative_markdown || '') + '</div>' +
+        '</div>'
+      ).join('');
+    }
+
+    // Show downloads
+    if (data.outputs) {
+      document.getElementById('docGenDownloads').style.display = 'flex';
+      document.getElementById('docGenDocx').href = API + '/outputs/' + currentRfpId + '/draft.docx';
+      document.getElementById('docGenXlsx').href = API + '/outputs/' + currentRfpId + '/compliance.xlsx';
+    }
+
+    toast('Document generated! ' + (data.sections?.length || 0) + ' sections.');
+  } catch (err) {
+    toast('Document generation failed: ' + err.message, 'error');
+  } finally {
+    ld.classList.remove('visible');
+    btn.disabled = false;
+  }
+});
+
+// Template
+function updateApproachLabel() {
+  const sel = document.querySelector('input[name="approach"]:checked');
+  const label = document.getElementById('currentApproachLabel');
+  if (sel && label) {
+    const names = { per_requirement: 'Per Requirement', per_section: 'Per Section', map_reduce: 'Map-Reduce' };
+    label.textContent = names[sel.value] || sel.value;
+  }
+  updateDocGenStatus();
+}
+
+async function loadTemplateInfo(){
+  try{
+    const r=await fetch(API+'/template/info'); const d=await r.json();
+    const el=document.getElementById('templateInfo');
+    if(d.exists){
+      el.innerHTML='Template loaded: '+(d.size_bytes/1024).toFixed(1)+' KB, last modified: '+new Date(d.last_modified).toLocaleString();
+      el.style.borderColor='#a3d977';
+      renderTemplateSections(d.sections || []);
+      // Update approach notes
+      const note = document.getElementById('sectionApproachNote');
+      const mrNote = document.getElementById('mapReduceNote');
+      if (d.sections?.length) {
+        const msg = '<br>&#10003; Template: '+d.sections.length+' sections.';
+        if(note){note.innerHTML=msg;note.style.color='var(--success)';}
+        if(mrNote){mrNote.innerHTML=msg;mrNote.style.color='var(--success)';}
+      }
+    } else {
+      el.innerHTML='No custom template. A default will be used.';
+      el.style.borderColor='#ffe082';
+      document.getElementById('cardTplSections').style.display='none';
+      const note = document.getElementById('sectionApproachNote');
+      const mrNote = document.getElementById('mapReduceNote');
+      const msg = '<br>&#9888; No template sections. Defaults will be used.';
+      if(note){note.innerHTML=msg;note.style.color='#8a6d00';}
+      if(mrNote){mrNote.innerHTML=msg;mrNote.style.color='#8a6d00';}
+    }
+  }catch{document.getElementById('templateInfo').textContent='Could not check template status.'}
+}
+
+let templateSectionsData = [];
+
+function renderTemplateSections(sections) {
+  templateSectionsData = sections;
+  const card = document.getElementById('cardTplSections');
+  const list = document.getElementById('tplSectionsList');
+  if (!sections.length) { card.style.display='none'; return; }
+  card.style.display='block';
+  list.innerHTML = sections.map((s, i) => {
+    const indent = (s.level - 1) * 16;
+    const levelBadge = '<span style="background:var(--primary);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600">H'+s.level+'</span>';
+    const placeholder = s.placeholder ? ' <span style="background:#fff4ce;color:#8a6d00;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600">{{'+escHtml(s.placeholder)+'}}</span>' : '';
+
+    const defaultPrompt = buildDefaultPrompt(s);
+
+    return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;margin-left:'+indent+'px;overflow:hidden" id="tpl-section-'+i+'">' +
+      '<div style="padding:10px 12px;background:#fafafa;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">' +
+        levelBadge +
+        '<strong style="font-size:13px;flex:1">'+escHtml(s.heading)+'</strong>' +
+        placeholder +
+        '<button class="btn btn-primary btn-sm" onclick="generateSection('+i+')">Generate</button>' +
+      '</div>' +
+      '<div style="padding:10px 12px">' +
+        '<label style="font-size:11px;margin-bottom:4px">Prompt for this section:</label>' +
+        '<textarea id="tpl-prompt-'+i+'" rows="3" style="width:100%;font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-family:inherit;margin-bottom:6px">'+escHtml(defaultPrompt)+'</textarea>' +
+        '<div id="tpl-response-'+i+'" style="display:none">' +
+          '<label style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Generated response:</label>' +
+          '<div id="tpl-response-text-'+i+'" style="font-size:12px;line-height:1.6;background:#f5f9ff;padding:10px;border-radius:4px;border:1px solid #d0e4ff;max-height:300px;overflow-y:auto"></div>' +
+        '</div>' +
+        '<div id="tpl-loading-'+i+'" class="loading"><div class="spinner"></div><span>Generating...</span></div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function buildDefaultPrompt(section) {
+  const name = section.heading;
+  const hasRfpContext = extractedRequirements.length > 0 || extractedQuestions.length > 0;
+  if (!hasRfpContext) {
+    const hasResponses = generatedResponses.length > 0;
+    if (hasResponses) {
+      return 'Write the "' + name + '" section of a professional RFP response document.\n' +
+        'Use the requirement responses provided as source material.\n' +
+        'Synthesize them into a coherent, flowing narrative, not a list.\n' +
+        'Reference requirement IDs in brackets where relevant, e.g. [F1].\n' +
+        'Tone: professional.';
+    }
+    return 'Write the "' + name + '" section of a professional RFP response document.\n' +
+      'This section should cover the key points relevant to "' + name + '".\n' +
+      'Use Bing search to find relevant Azure/Microsoft product information.\n' +
+      'Tone: professional.';
+  }
+
+  const sectionKeywords = tokenizeForPromptCoach(name + ' ' + (section.placeholder || ''));
+  const relevantReqs = rankRelevantRequirements(sectionKeywords, extractedRequirements).slice(0, 10);
+  const relevantQuestions = rankRelevantQuestions(sectionKeywords, extractedQuestions).slice(0, 5);
+  const relevantCriteria = rankRelevantQuestions(sectionKeywords, extractedEvaluationCriteria).slice(0, 5);
+  const tone = document.getElementById('draftTone')?.value || 'professional';
+  const commonContext = document.getElementById('draftContext')?.value?.trim() || '';
+
+  const reqLines = relevantReqs.length
+    ? relevantReqs.map(r => '- [' + (r.id || '?') + '] ' + truncatePromptCoachText(r.text || '', 200)).join('\n')
+    : '- No highly-matched requirements found for this section. Use overall RFP context.';
+
+  const qLines = relevantQuestions.length
+    ? relevantQuestions.map(q => '- ' + truncatePromptCoachText(q, 180)).join('\n')
+    : '- None';
+
+  const cLines = relevantCriteria.length
+    ? relevantCriteria.map(c => '- ' + truncatePromptCoachText(c, 180)).join('\n')
+    : '- None';
+
+  return 'You are drafting the "' + name + '" section of an RFP response.\n' +
+    'Use ONLY the RFP-specific context below as primary source material.\n\n' +
+    (commonContext ? 'Company context:\n' + commonContext + '\n\n' : '') +
+    'Section objective:\n' +
+    '- Address buyer intent for "' + name + '" directly and concretely.\n' +
+    '- Prioritize mandatory and technical/security constraints where relevant.\n' +
+    '- Keep claims aligned to the listed requirements and questions.\n\n' +
+    'Most relevant extracted requirements:\n' + reqLines + '\n\n' +
+    'Relevant extracted questions:\n' + qLines + '\n\n' +
+    'Relevant evaluation criteria:\n' + cLines + '\n\n' +
+    'Writing instructions:\n' +
+    '- Produce a coherent section narrative, not bullet-only output.\n' +
+    '- Explicitly cover how we satisfy key requirements.\n' +
+    '- Call out assumptions/risks only when necessary.\n' +
+    '- Reference requirement IDs in brackets where useful, e.g. [R12].\n' +
+    '- Tone: ' + tone + '.\n' +
+    '- Do not invent capabilities not supported by provided context.';
+}
+
+function tokenizeForPromptCoach(text) {
+  const stop = new Set(['the','and','for','with','from','that','this','into','your','you','are','our','all','any','not','but','use','using','each','per','section','response','rfp','document']);
+  return new Set((text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stop.has(w)));
+}
+
+function promptCoachScore(text, keywordSet) {
+  const words = tokenizeForPromptCoach(text);
+  let score = 0;
+  keywordSet.forEach(k => { if (words.has(k)) score += 1; });
+  return score;
+}
+
+function rankRelevantRequirements(keywordSet, requirements) {
+  return (requirements || [])
+    .map(r => {
+      const baseText = (r.text || '') + ' ' + (r.category || '') + ' ' + (r.priority || '');
+      let score = promptCoachScore(baseText, keywordSet);
+      if ((r.priority || '').toLowerCase() === 'mandatory') score += 0.5;
+      return { ...r, _score: score };
+    })
+    .sort((a, b) => b._score - a._score || ((a.id || '').localeCompare(b.id || '')));
+}
+
+function rankRelevantQuestions(keywordSet, items) {
+  return (items || [])
+    .map(t => ({ text: t, _score: promptCoachScore(t, keywordSet) }))
+    .sort((a, b) => b._score - a._score)
+    .map(x => x.text);
+}
+
+function truncatePromptCoachText(text, maxLen) {
+  if (!text) return '';
+  return text.length > maxLen ? text.substring(0, maxLen - 3) + '...' : text;
+}
+
+async function generateSection(index) {
+  const section = templateSectionsData[index];
+  if (!section) return;
+  const prompt = document.getElementById('tpl-prompt-' + index)?.value || '';
+  const ld = document.getElementById('tpl-loading-' + index);
+  const respDiv = document.getElementById('tpl-response-' + index);
+  const respText = document.getElementById('tpl-response-text-' + index);
+
+  ld.classList.add('visible');
+
+  try {
+    const r = await fetch(API + '/draft/generate-section', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        section_name: section.heading,
+        prompt: prompt,
+        responses: generatedResponses,
+        tone: document.getElementById('draftTone')?.value || 'professional',
+      })
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    const sectionPayload = {
+      section_name: data.section_name || section.heading,
+      narrative_markdown: data.narrative_markdown || data.raw_response || '',
+      requirement_ids: data.requirement_ids || [],
+    };
+    const existingIdx = generatedSectionNarratives.findIndex(s => s.section_name === sectionPayload.section_name);
+    if (existingIdx >= 0) {
+      generatedSectionNarratives[existingIdx] = sectionPayload;
+    } else {
+      generatedSectionNarratives.push(sectionPayload);
+    }
+    updateDocGenStatus();
+    respDiv.style.display = 'block';
+    respText.textContent = data.narrative_markdown || data.raw_response || '';
+    toast('Section "' + section.heading + '" generated.');
+  } catch (err) {
+    toast('Failed: ' + err.message, 'error');
+  } finally {
+    ld.classList.remove('visible');
+  }
+}
+
+async function generateAllSections() {
+  for (let i = 0; i < templateSectionsData.length; i++) {
+    await generateSection(i);
+  }
+  toast('All sections generated!');
+}
+
+setupDragDrop('tplUploadZone','tplFileInput',files=>{document.getElementById('tplFileName').textContent=files[0].name;document.getElementById('tplFileName').style.display='block';document.getElementById('btnTplUpload').disabled=false});
+document.getElementById('btnTplUpload').addEventListener('click',async()=>{
+  const file=document.getElementById('tplFileInput').files[0];if(!file)return;
+  const ld=document.getElementById('tplLoading');
+  ld.classList.add('visible');document.getElementById('btnTplUpload').disabled=true;
+  try{
+    const fd=new FormData();fd.append('file',file);
+    const r=await fetch(API+'/template/upload',{method:'POST',body:fd});
+    if(!r.ok)throw new Error(await r.text());
+    const data = await r.json();
+    if (data.warning) {
+      toast(data.warning, 'error');
+      document.getElementById('templateInfo').innerHTML = '<span style="color:var(--error)">&#9888; ' + escHtml(data.warning) + '</span>';
+      document.getElementById('templateInfo').style.borderColor = 'var(--error)';
+    } else {
+      toast('Template uploaded! ' + (data.sections?.length || 0) + ' sections detected.');
+    }
+    renderTemplateSections(data.sections || []);
+    loadTemplateInfo();
+  }catch(err){toast('Upload failed: '+err.message,'error')}
+  finally{ld.classList.remove('visible');document.getElementById('btnTplUpload').disabled=false}
+});
+
+// Ask
+document.getElementById('btnAsk').addEventListener('click',async()=>{const q=document.getElementById('askQuestion').value.trim();if(!q)return toast('Enter a question','error');const ld=document.getElementById('askLoading'),btn=document.getElementById('btnAsk');ld.classList.add('visible');btn.disabled=true;try{const r=await fetch(API+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,client_id:document.getElementById('askClientId').value,project_id:document.getElementById('askProjectId').value,solution_area:document.getElementById('askSolutionArea').value})});if(!r.ok)throw new Error(await r.text());const data=await r.json();document.getElementById('answerBox').style.display='block';document.getElementById('answerText').textContent=data.answer_markdown||data.raw_response||JSON.stringify(data);document.getElementById('answerJson').textContent=JSON.stringify(data,null,2);toast('Answer received!')}catch(err){toast('Error: '+err.message,'error')}finally{ld.classList.remove('visible');btn.disabled=false}});
+
+// Dashboard
+async function loadDashboard(){try{const[health,metrics]=await Promise.all([fetch(API+'/health').then(r=>r.json()),fetch(API+'/metrics').then(r=>r.json())]);document.getElementById('healthResult').innerHTML='<pre>'+JSON.stringify(health,null,2)+'</pre>';const grid=document.getElementById('metricsGrid');grid.innerHTML='';const labels={rfp_uploads:'RFP Uploads',extractions:'Extractions',drafts:'Drafts',answers:'Answers',redaction_blocks:'Redactions'};for(const[k,l]of Object.entries(labels))grid.innerHTML+='<div class="metric-card"><div class="value">'+(metrics[k]??0)+'</div><div class="label">'+l+'</div></div>'}catch(err){document.getElementById('healthResult').innerHTML='<pre style="color:var(--error)">'+err.message+'</pre>'}}
+document.getElementById('btnRefreshMetrics').addEventListener('click',loadDashboard);
+
+// Logs
+let logWs=null,logEntries=[];
+function connectLogWs(){if(logWs&&logWs.readyState<=1)return;logWs=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/logs');logWs.onopen=()=>{document.getElementById('wsDot').classList.add('connected');document.getElementById('wsStatus').textContent='Connected'};logWs.onclose=()=>{document.getElementById('wsDot').classList.remove('connected');document.getElementById('wsStatus').textContent='Disconnected';setTimeout(()=>{if(document.getElementById('tab-logs').classList.contains('active'))connectLogWs()},3000)};logWs.onerror=()=>{document.getElementById('wsStatus').textContent='Error'};logWs.onmessage=evt=>{try{const e=JSON.parse(evt.data);logEntries.push(e);if(logEntries.length>2000)logEntries=logEntries.slice(-1500);renderLogEntry(e);document.getElementById('logCounter').textContent=logEntries.length}catch{}}}
+function renderLogEntry(e){const filter=document.getElementById('logFilter').value.toLowerCase();if(filter&&!e.message.toLowerCase().includes(filter)&&!(e.logger||'').toLowerCase().includes(filter))return;const scroll=document.getElementById('logScroll');const div=document.createElement('div');div.className='log-entry';const ts=e.ts?(e.ts.split('T')[1]||'').replace('Z',''):'';div.innerHTML='<span class="log-ts">'+escHtml(ts)+'</span><span class="log-level '+e.level+'">'+e.level+'</span><span class="log-msg">'+escHtml(e.message)+'</span>';scroll.appendChild(div);if(document.getElementById('logAutoScroll').checked)scroll.scrollTop=scroll.scrollHeight}
+function rerenderLogs(){document.getElementById('logScroll').innerHTML='';logEntries.forEach(e=>renderLogEntry(e))}
+document.getElementById('logFilter').addEventListener('input',rerenderLogs);
+document.getElementById('btnClearLogs').addEventListener('click',()=>{logEntries=[];document.getElementById('logScroll').innerHTML='';document.getElementById('logCounter').textContent='0'});
+connectLogWs();
+</script>
+</body>
+</html>
