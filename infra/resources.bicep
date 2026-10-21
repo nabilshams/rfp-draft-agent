@@ -10,8 +10,13 @@ param environmentName string
 param principalId string
 param principalType string
 param apiAppExists bool
+param authMode string
 param entraTenantId string
+@minLength(1)
 param entraClientId string
+@secure()
+@minLength(1)
+param entraClientSecret string
 param entraAudience string
 param bingConnectionId string
 param allowedIpRanges string
@@ -269,14 +274,19 @@ var baseEnv = [
   { name: 'STORAGE_RFP_CONTAINER', value: 'rfp-uploads' }
   { name: 'STORAGE_OUTPUT_CONTAINER', value: 'outputs' }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection-string' }
-  { name: 'ENTRA_TENANT_ID', value: entraTenantId }
-  // Settings requires a client ID value even in dev mode.
-  { name: 'ENTRA_CLIENT_ID', value: empty(entraClientId) ? 'not-configured' : entraClientId }
+  { name: 'AUTH_MODE', value: authMode }
   { name: 'PARALLELISM', value: '1' }
   { name: 'SECTION_PARALLELISM', value: '3' }
 ]
-var audienceEnv = empty(entraAudience) ? [] : [{ name: 'ENTRA_AUDIENCE', value: entraAudience }]
+// Only jwt mode validates tokens inside the app and needs the tenant/client/audience.
+var jwtEnv = authMode == 'jwt' ? concat([
+  { name: 'ENTRA_TENANT_ID', value: entraTenantId }
+  { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+], empty(entraAudience) ? [] : [{ name: 'ENTRA_AUDIENCE', value: entraAudience }]) : []
 var bingEnv = empty(bingConnectionId) ? [] : [{ name: 'BING_CONNECTION_ID', value: bingConnectionId }]
+
+var easyAuthSecretName = 'microsoft-provider-authentication-secret'
+var authSecrets = authMode == 'easyauth' ? [{ name: easyAuthSecretName, value: entraClientSecret }] : []
 
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: apiAppName
@@ -312,12 +322,12 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
           identity: identity.id
         }
       ]
-      secrets: [
+      secrets: concat([
         {
           name: 'appinsights-connection-string'
           value: appInsights.properties.ConnectionString
         }
-      ]
+      ], authSecrets)
     }
     template: {
       containers: [
@@ -328,7 +338,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          env: concat(baseEnv, audienceEnv, bingEnv)
+          env: concat(baseEnv, jwtEnv, bingEnv)
           probes: [
             {
               type: 'Startup'
@@ -359,6 +369,43 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
         minReplicas: 1
         maxReplicas: 1
       }
+    }
+  }
+}
+
+// Container Apps built-in authentication. In easyauth mode the app trusts the identity headers this
+// layer sets, so every request must pass through it: anonymous requests are redirected to sign-in
+// and only /health (container probes) is excluded.
+resource apiAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (authMode == 'easyauth') {
+  parent: apiApp
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+      excludedPaths: ['/health']
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: entraClientId
+          clientSecretSettingName: easyAuthSecretName
+          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            'api://${entraClientId}'
+            entraClientId
+          ]
+        }
+      }
+    }
+    login: {
+      preserveUrlFragmentsForLogins: false
     }
   }
 }

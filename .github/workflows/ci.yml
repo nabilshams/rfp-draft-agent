@@ -36,8 +36,7 @@ jobs:
           FOUNDRY_PROJECT_ENDPOINT: https://test.services.ai.azure.com
           AZURE_AI_SEARCH_CONNECTION_NAME: test-search
           AZURE_STORAGE_ACCOUNT_URL: https://teststorage.blob.core.windows.net
-          ENTRA_TENANT_ID: dev
-          ENTRA_CLIENT_ID: test-client-id
+          AUTH_MODE: disabled
         run: |
           pytest tests/ -v --tb=short --cov=app --cov-report=term-missing
 

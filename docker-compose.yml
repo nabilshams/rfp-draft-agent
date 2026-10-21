@@ -20,7 +20,7 @@ services:
       - .env
     environment:
       - AZURE_STORAGE_ACCOUNT_URL=http://azurite:10000/devstoreaccount1
-      - ENTRA_TENANT_ID=dev
+      - AUTH_MODE=disabled
     depends_on:
       - azurite
 

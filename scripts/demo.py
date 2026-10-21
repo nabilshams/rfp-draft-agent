@@ -3,9 +3,8 @@
 Usage:
     python scripts/demo.py --base-url http://localhost:8000
 
-For authenticated environments, set the DEMO_TOKEN env var to a valid
-Entra ID access token.  For local dev (ENTRA_TENANT_ID=dev), no token
-is needed.
+For authenticated environments (AUTH_MODE=jwt), set the DEMO_TOKEN env var to a valid
+Entra ID access token.  For local dev (AUTH_MODE=disabled), no token is needed.
 """
 
 from __future__ import annotations

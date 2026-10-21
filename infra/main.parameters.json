@@ -7,8 +7,10 @@
     "principalId": { "value": "${AZURE_PRINCIPAL_ID}" },
     "principalType": { "value": "${AZURE_PRINCIPAL_TYPE=User}" },
     "apiAppExists": { "value": "${SERVICE_API_RESOURCE_EXISTS=false}" },
-    "entraTenantId": { "value": "${ENTRA_TENANT_ID=dev}" },
+    "authMode": { "value": "${AUTH_MODE=disabled}" },
+    "entraTenantId": { "value": "${ENTRA_TENANT_ID=}" },
     "entraClientId": { "value": "${ENTRA_CLIENT_ID=}" },
+    "entraClientSecret": { "value": "${ENTRA_CLIENT_SECRET=}" },
     "entraAudience": { "value": "${ENTRA_AUDIENCE=}" },
     "bingConnectionId": { "value": "${BING_CONNECTION_ID=}" },
     "allowedIpRanges": { "value": "${ALLOWED_IP_RANGES=}" }

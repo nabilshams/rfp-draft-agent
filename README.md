@@ -49,7 +49,7 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 | **DOCX Output** | Template-based with placeholder replacement + appended structured content |
 | **Redaction** | Configurable YAML policy; regex-based removal of pricing, PII, banking info; pre-gen + post-gen scans |
 | **DLAC** | OData filters enforce `oids/groups` membership + `client_id/project_id/solution_area` segmentation |
-| **Auth** | Entra ID JWT validation; extracts `oid` + `groups` claims; dev bypass mode |
+| **Auth** | Three modes via `AUTH_MODE`: `disabled` (local/demo), `easyauth` (Container Apps built-in sign-in), `jwt` (validates Entra bearer tokens); extracts `oid` + `groups` |
 | **Observability** | OpenTelemetry + Application Insights; spans for tool calls, redaction events, token usage |
 | **Infra-as-Code** | Bicep for Search, Storage, App Insights, Managed Identity, Container Apps |
 
@@ -99,9 +99,10 @@ cp .env.example .env
 | `STORAGE_RFP_CONTAINER` | Container for RFP uploads (default: `rfp-uploads`) |
 | `STORAGE_OUTPUT_CONTAINER` | Container for generated outputs (default: `outputs`) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights connection string |
-| `ENTRA_TENANT_ID` | Entra ID tenant ID (set to `dev` for local dev bypass) |
-| `ENTRA_CLIENT_ID` | Entra ID client/app ID |
-| `ENTRA_AUDIENCE` | JWT audience (defaults to client ID) |
+| `AUTH_MODE` | `disabled`, `easyauth` or `jwt` (default `jwt`). `disabled` turns authentication off and logs a warning at startup; use it for local development only. See [Authentication](#authentication) |
+| `ENTRA_TENANT_ID` | Entra ID tenant ID (`jwt` mode). The old `dev` value is no longer supported; use `AUTH_MODE=disabled` |
+| `ENTRA_CLIENT_ID` | Entra ID client/app ID (`jwt` mode) |
+| `ENTRA_AUDIENCE` | JWT audience (`jwt` mode; defaults to client ID) |
 | `EMBEDDING_MODEL_DEPLOYMENT_NAME` | Embedding model (default: `text-embedding-3-large`) |
 | `PARALLELISM` | Number of Uvicorn worker processes when running via `python -m app.main` (default: `1`) |
 | `SECTION_PARALLELISM` | Number of sections synthesized concurrently in `per_section` and map-reduce phase 2 (default: `1`) |
@@ -116,8 +117,8 @@ python scripts/create_template.py
 ### 4. Run the server
 
 ```bash
-# Development (auth bypass)
-ENTRA_TENANT_ID=dev uvicorn app.main:app --reload --port 8000
+# Development (no authentication)
+AUTH_MODE=disabled uvicorn app.main:app --reload --port 8000
 
 # Parallel workers from .env (set PARALLELISM, disable reload)
 python -m app.main
@@ -290,12 +291,45 @@ in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `M
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ENTRA_TENANT_ID` | `dev` | `dev` disables authentication. Set your tenant ID (plus `ENTRA_CLIENT_ID`, optionally `ENTRA_AUDIENCE`) to enforce JWT validation. The built-in UI has no sign-in yet, so it needs bearer tokens from another client. |
+| `AUTH_MODE` | `disabled` | `disabled` = no authentication (demo only). `easyauth` = users sign in with Entra ID through Container Apps built-in authentication; see [Authentication](#authentication). `jwt` = the app validates bearer tokens (needs `ENTRA_CLIENT_ID`; `ENTRA_TENANT_ID` defaults to your tenant). |
 | `ALLOWED_IP_RANGES` | _(empty = open)_ | Comma-separated CIDRs allowed to reach the app, e.g. `203.0.113.4/32,198.51.100.0/24`. |
 | `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When empty, agents are created without Bing grounding. |
 
-> **Security:** with the default `ENTRA_TENANT_ID=dev` the deployed app has **no authentication** and is
-> reachable from the internet. Set `ALLOWED_IP_RANGES` or configure Entra before loading real RFP data.
+> **Security:** with the default `AUTH_MODE=disabled` the deployed app has **no authentication** and is
+> reachable from the internet; the app logs a warning at startup. Turn on [authentication](#authentication)
+> or set `ALLOWED_IP_RANGES` before loading real RFP data.
+
+### Authentication
+
+The recommended setup for Azure is **Easy Auth** (Container Apps built-in authentication): the platform
+signs users in with Entra ID before any request reaches the app, so the UI needs no sign-in code.
+
+```bash
+azd provision                    # creates the app (authentication is disabled at this point)
+python scripts/setup_auth.py     # creates the Entra app registration and stores its values in the azd env
+azd provision                    # applies AUTH_MODE=easyauth and the authentication settings
+```
+
+`setup_auth.py --dry-run` shows what it would change without changing anything, and re-running it keeps the
+existing registration and secret (`--rotate-secret` creates a new secret). It needs permission to create app
+registrations in your tenant. The client secret is stored in the azd environment (`.azure/`, git-ignored)
+and as a Container Apps secret.
+
+How it works and what to know:
+
+- In `easyauth` mode the app trusts the `X-MS-CLIENT-PRINCIPAL*` identity headers. The platform removes
+  those headers from external requests, so they only exist when Container Apps set them. Every request except
+  `/health` (container probes) is authenticated by the platform; anonymous browsers are redirected to sign in.
+  Never run `AUTH_MODE=easyauth` anywhere that is not behind Container Apps authentication.
+- `azd provision` refuses `easyauth` / `jwt` without `ENTRA_CLIENT_ID` (and, for `easyauth`,
+  `ENTRA_CLIENT_SECRET`), so a half-configured deployment can't be created.
+- When switching an existing deployment from `disabled` to `easyauth`, there is a short window while the new
+  revision starts before the authentication settings are applied. Set `ALLOWED_IP_RANGES` first if that matters.
+- Users are identified by their object ID. Group claims are used for document access only when the platform
+  passes them; resolving group membership for users in many groups (the "group overage" case) is not implemented.
+- `/metrics` and `/ws/logs` require authentication in `easyauth` and `jwt` modes; only `/health` is open.
+- API clients can use `AUTH_MODE=jwt` instead and send `Authorization: Bearer <Entra access token>`. Signing keys
+  are cached for an hour and refetched (rate limited) when a token uses an unknown key, so key rotation is handled.
 
 After the first deploy, upload documents through the UI or `POST /kb/upload` + `POST /kb/ingest`; the
 search index is created on first ingest. To run locally against the deployed resources, copy the values
@@ -360,7 +394,7 @@ rfp-draft-agent/
 │   ├── main.py                    # FastAPI entry point
 │   ├── config.py                  # Settings from env vars
 │   ├── auth/
-│   │   └── entra.py               # Entra ID JWT validation
+│   │   └── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)
 │   ├── agents/
 │   │   ├── foundry_agent.py       # Foundry agent orchestration
 │   │   ├── prompts.py             # System instructions + JSON schemas
@@ -385,6 +419,7 @@ rfp-draft-agent/
 │   └── rfp_response_template.docx # DOCX template (generate with scripts/create_template.py)
 ├── scripts/
 │   ├── create_template.py         # Generate the DOCX template
+│   ├── setup_auth.py              # Create the Entra app registration for Easy Auth (azd)
 │   └── demo.py                    # End-to-end demo script
 ├── tests/
 │   ├── test_redaction.py
