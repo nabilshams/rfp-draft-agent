@@ -35,15 +35,18 @@ from fastapi import (
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
+    status,
 )
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.auth.entra import UserClaims, get_current_user
+from app.auth.entra import UserClaims, authenticate, get_current_user, log_auth_mode
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+_CONSOLE_HANDLER_NAME = "rfp-console"
 
 # ── Counters for /metrics ────────────────────────────────
 _counters: dict[str, int] = {
@@ -105,6 +108,24 @@ class WebSocketLogHandler(logging.Handler):
             pass  # loop is shutting down
 
 
+def _configure_logging(level_name: str) -> None:
+    """Send application logs to the console (container log stream) at the configured level.
+
+    The root logger has no console handler otherwise, so records from ``app.*`` loggers would
+    never leave the process except through the WebSocket handler.
+    """
+    root = logging.getLogger()
+    if not any(h.get_name() == _CONSOLE_HANDLER_NAME for h in root.handlers):
+        handler = logging.StreamHandler()
+        handler.set_name(_CONSOLE_HANDLER_NAME)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(getattr(logging, level_name.upper(), logging.INFO))
+    # These log every outgoing HTTP request at INFO.
+    for noisy in ("azure", "httpx", "openai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def _install_ws_log_handler() -> None:
     """Install the WebSocket handler on the root logger."""
     handler = WebSocketLogHandler()
@@ -125,6 +146,8 @@ async def lifespan(app: FastAPI):
 
     _main_loop = asyncio.get_running_loop()
     _install_ws_log_handler()
+    _configure_logging(get_settings().log_level)
+    log_auth_mode(get_settings())
     configure_tracing(app)
 
     # Pre-create persistent agents on startup
@@ -163,8 +186,13 @@ async def root():
 
 
 @app.websocket("/ws/logs")
-async def ws_logs(websocket: WebSocket):
-    """Stream live log entries to the browser over WebSocket."""
+async def ws_logs(websocket: WebSocket, settings: Settings = Depends(get_settings)):
+    """Stream live log entries to the browser over WebSocket (authenticated like the HTTP API)."""
+    try:
+        await authenticate(websocket.headers, settings)
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await websocket.accept()
     _ws_clients.add(websocket)
     logger.info("WebSocket log client connected (%d total)", len(_ws_clients))
@@ -243,7 +271,7 @@ async def health():
 
 
 @app.get("/metrics", tags=["ops"])
-async def metrics():
+async def metrics(user: UserClaims = Depends(get_current_user)):
     return _counters
 
 

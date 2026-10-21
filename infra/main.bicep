@@ -28,13 +28,21 @@ param principalType string = 'User'
 @description('Set by azd (SERVICE_API_RESOURCE_EXISTS) so re-provisioning keeps the image that was last deployed.')
 param apiAppExists bool = false
 
-@description('"dev" disables JWT validation (demo only). Set to your Entra tenant ID to enforce JWT validation.')
-param entraTenantId string = 'dev'
+@allowed(['disabled', 'easyauth', 'jwt'])
+@description('How requests are authenticated. "disabled" = no authentication (demo only; the app logs a warning). "easyauth" = Container Apps built-in authentication in front of the app (needs entraClientId and entraClientSecret; see scripts/setup_auth.py). "jwt" = the app validates Entra bearer tokens itself (needs entraClientId).')
+param authMode string = 'disabled'
 
-@description('Entra app registration (client) ID used when validating JWTs.')
+@description('Entra tenant used for sign-in and token validation. Defaults to the tenant of the deployment.')
+param entraTenantId string = ''
+
+@description('Entra app registration (client) ID. Required when authMode is not "disabled".')
 param entraClientId string = ''
 
-@description('Expected token audience. Defaults to the client ID when empty.')
+@secure()
+@description('Client secret of the Entra app registration. Required when authMode is "easyauth".')
+param entraClientSecret string = ''
+
+@description('Expected token audience (jwt mode). Defaults to the client ID when empty.')
 param entraAudience string = ''
 
 @description('Resource ID of an existing Grounding-with-Bing connection in the Foundry project. Leave empty to disable Bing grounding.')
@@ -78,8 +86,12 @@ module resources 'resources.bicep' = {
     principalId: principalId
     principalType: principalType
     apiAppExists: apiAppExists
-    entraTenantId: entraTenantId
-    entraClientId: entraClientId
+    authMode: authMode
+    entraTenantId: empty(entraTenantId) ? tenant().tenantId : entraTenantId
+    // resources.bicep rejects empty values for these, so a half-configured deployment fails
+    // template validation instead of creating an app that is unprotected or crash-looping.
+    entraClientId: authMode == 'disabled' ? 'not-configured' : entraClientId
+    entraClientSecret: authMode == 'easyauth' ? entraClientSecret : 'not-used'
     entraAudience: entraAudience
     bingConnectionId: bingConnectionId
     allowedIpRanges: allowedIpRanges
@@ -106,6 +118,7 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = resources.outputs.containerReg
 output AZURE_CONTAINER_REGISTRY_NAME string = resources.outputs.containerRegistryName
 
 output SERVICE_API_ENDPOINT_URL string = resources.outputs.apiUrl
+output AUTH_MODE string = authMode
 output SERVICE_API_IDENTITY_PRINCIPAL_ID string = resources.outputs.identityPrincipalId
 
 // Values for a local .env file (see .env.example)

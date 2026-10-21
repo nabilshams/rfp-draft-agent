@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -28,9 +30,14 @@ class Settings(BaseSettings):
     # ── Application Insights ──────────────────────────────
     applicationinsights_connection_string: str = Field("", alias="APPLICATIONINSIGHTS_CONNECTION_STRING")
 
-    # ── Entra ID JWT ──────────────────────────────────────
-    entra_tenant_id: str = Field(..., alias="ENTRA_TENANT_ID")
-    entra_client_id: str = Field(..., alias="ENTRA_CLIENT_ID")
+    # ── Authentication ────────────────────────────────────
+    # disabled – no authentication (local development / demos only; logs a warning at startup)
+    # easyauth – Azure Container Apps built-in authentication authenticates every request and passes
+    #            the identity in X-MS-CLIENT-PRINCIPAL headers (the app must only be reachable through it)
+    # jwt      – the app validates Entra ID bearer tokens itself (needs the ENTRA_* settings)
+    auth_mode: Literal["disabled", "easyauth", "jwt"] = Field("jwt", alias="AUTH_MODE")
+    entra_tenant_id: str = Field("", alias="ENTRA_TENANT_ID")
+    entra_client_id: str = Field("", alias="ENTRA_CLIENT_ID")
     entra_audience: str = Field("", alias="ENTRA_AUDIENCE")
 
     # ── Optional ──────────────────────────────────────────
@@ -49,6 +56,16 @@ class Settings(BaseSettings):
         "populate_by_name": True,
         "extra": "ignore",
     }
+
+    @model_validator(mode="after")
+    def _check_auth_settings(self) -> Settings:
+        if self.auth_mode == "jwt" and (self.entra_tenant_id in ("", "dev") or not self.entra_client_id):
+            raise ValueError(
+                "AUTH_MODE=jwt requires ENTRA_TENANT_ID (a real tenant ID) and ENTRA_CLIENT_ID. "
+                "To run without authentication (local development only) set AUTH_MODE=disabled; "
+                "ENTRA_TENANT_ID=dev is no longer supported."
+            )
+        return self
 
 
 _settings: Settings | None = None
