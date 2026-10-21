@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import tiktoken
@@ -18,7 +17,7 @@ from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
-    ComplexField,
+    HnswAlgorithmConfiguration,
     SearchableField,
     SearchField,
     SearchFieldDataType,
@@ -26,7 +25,6 @@ from azure.search.documents.indexes.models import (
     SimpleField,
     VectorSearch,
     VectorSearchProfile,
-    HnswAlgorithmConfiguration,
 )
 from azure.storage.blob import BlobServiceClient
 
@@ -149,8 +147,8 @@ def _chunk_by_headings(text: str, max_tokens: int = 1000) -> list[str]:
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
     """Call Azure OpenAI embedding model via the Azure OpenAI client."""
-    from openai import AzureOpenAI
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+    from openai import AzureOpenAI
 
     settings = get_settings()
     token_provider = get_bearer_token_provider(
@@ -241,7 +239,7 @@ def ingest_blob(
                 "oids": oids or [],
                 "groups": groups or [],
                 "redaction_level": redaction_level,
-                "last_reviewed_date": datetime.now(timezone.utc).isoformat(),
+                "last_reviewed_date": datetime.now(UTC).isoformat(),
             }
         )
 

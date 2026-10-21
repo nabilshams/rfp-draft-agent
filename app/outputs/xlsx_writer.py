@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -96,8 +96,7 @@ def generate_xlsx(
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             cell.border = _THIN_BORDER
 
-    # ── Data validation for "Meets" column ────────────────
-    meets_col = 4  # column D
+    # ── Data validation for "Meets" column (D) ─────────────
     dv = DataValidation(type="list", formula1='"Yes,Partial,No"', allow_blank=True)
     dv.error = "Please select Yes, Partial, or No."
     dv.errorTitle = "Invalid value"

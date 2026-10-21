@@ -108,6 +108,20 @@ def _replace_placeholder(doc: Document, placeholder: str, value: str) -> None:
                                 run.text = run.text.replace(tag, value)
 
 
+def _default_section_content(heading: str, draft: dict[str, Any]) -> str:
+    """Fallback content for a template heading that has no placeholder or section narrative.
+
+    Real templates use instructional text instead of ``{{placeholders}}``, so the draft's
+    executive summary and solution overview are matched by heading text.
+    """
+    lowered = heading.lower()
+    if "executive summary" in lowered:
+        return draft.get("executive_summary", "")
+    if "solution overview" in lowered:
+        return draft.get("solution_overview", "")
+    return ""
+
+
 def generate_docx(draft: dict[str, Any]) -> bytes:
     """Create a DOCX from the agent draft JSON.
 
@@ -183,7 +197,7 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
             elif placeholder == "compliance_matrix_summary":
                 content = compliance_summary
             else:
-                content = narrative_by_heading.get(heading.lower(), "")
+                content = narrative_by_heading.get(heading.lower(), "") or _default_section_content(heading, draft)
 
             doc.add_paragraph(content or "Not provided.")
     else:

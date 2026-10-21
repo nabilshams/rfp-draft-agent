@@ -1,15 +1,12 @@
 """Tests for DOCX and XLSX output generation."""
 
 import io
-import json
 
-import pytest
 from docx import Document
 from openpyxl import load_workbook
 
 from app.outputs.docx_writer import generate_docx
 from app.outputs.xlsx_writer import generate_xlsx
-
 
 # ── Fixtures ─────────────────────────────────────────────
 
@@ -85,6 +82,24 @@ class TestDocxGeneration:
         doc = Document(io.BytesIO(data))
         full_text = "\n".join(p.text for p in doc.paragraphs)
         assert "comprehensive cloud solution" in full_text
+
+    def test_docx_contains_solution_overview(self):
+        data = generate_docx(SAMPLE_DRAFT)
+        doc = Document(io.BytesIO(data))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "built on Azure with high availability" in full_text
+
+    def test_section_narrative_takes_priority_over_summary_fallback(self):
+        draft = {
+            **SAMPLE_DRAFT,
+            "section_narratives": [
+                {"section_name": "1. Executive Summary", "narrative_markdown": "Narrative wins."},
+            ],
+        }
+        doc = Document(io.BytesIO(generate_docx(draft)))
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Narrative wins." in full_text
+        assert "comprehensive cloud solution" not in full_text
 
     def test_docx_contains_requirement_headings(self):
         data = generate_docx(SAMPLE_DRAFT)

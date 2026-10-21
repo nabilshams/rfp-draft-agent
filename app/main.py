@@ -20,12 +20,22 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, RedirectResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -53,7 +63,7 @@ class WebSocketLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "logger": record.name,
             "message": self.format(record),
@@ -265,7 +275,7 @@ async def rfp_extract(
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
-    from app.ingestion.rfp_extract import extract_rfp_structure, extract_text, extract_requirements_from_spreadsheet
+    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
 
     blob_name = f"{req.rfp_id}/{req.filename}"
     blob_service = BlobServiceClient(
@@ -310,12 +320,19 @@ async def rfp_extract_ai(
     settings: Settings = Depends(get_settings),
 ):
     """Extract requirements using AI agent — better for unstructured documents."""
+    from azure.ai.agents.models import MessageRole
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
-    from app.ingestion.rfp_extract import extract_text, _extract_text_from_excel, _extract_text_from_csv, RFPExtractionResult, Requirement
+
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client
     from app.ingestion.redaction import get_redaction_engine
-    from app.agents.foundry_agent import _get_agents_client, _ensure_agent, _DRAFT_AGENT_NAME
-    from azure.ai.agents.models import MessageRole
+    from app.ingestion.rfp_extract import (
+        Requirement,
+        RFPExtractionResult,
+        _extract_text_from_csv,
+        _extract_text_from_excel,
+        extract_text,
+    )
 
     blob_name = f"{req.rfp_id}/{req.filename}"
     blob_service = BlobServiceClient(
@@ -431,10 +448,6 @@ async def draft(
     settings: Settings = Depends(get_settings),
 ):
     """Generate a full RFP response draft with DOCX + XLSX outputs."""
-    from app.agents.foundry_agent import run_draft
-    from app.outputs.docx_writer import generate_docx
-    from app.outputs.xlsx_writer import generate_xlsx
-
     # First, retrieve the extraction (caller should have run /rfp/extract first).
     # For the draft endpoint we expect extraction results stored locally or
     # re-extract.  Here we accept requirements in the request context via a
@@ -442,6 +455,10 @@ async def draft(
     # rfp_id and we re-extract from blob.
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
+
+    from app.agents.foundry_agent import run_draft
+    from app.outputs.docx_writer import generate_docx
+    from app.outputs.xlsx_writer import generate_xlsx
 
     blob_service = BlobServiceClient(
         account_url=settings.azure_storage_account_url,
@@ -458,8 +475,8 @@ async def draft(
     data = rfp_container.download_blob(blob_name).readall()
     filename = blob_name.rsplit("/", 1)[-1]
 
-    from app.ingestion.rfp_extract import extract_rfp_structure, extract_text, extract_requirements_from_spreadsheet
     from app.ingestion.redaction import get_redaction_engine
+    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
 
     requirements: list[dict[str, Any]]
     if req.requirements:
@@ -549,9 +566,10 @@ async def draft_stream(
     """Stream RFP response generation – one SSE event per requirement."""
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
-    from app.ingestion.rfp_extract import extract_rfp_structure, extract_text, extract_requirements_from_spreadsheet
+
+    from app.agents.foundry_agent import stream_map_reduce, stream_per_requirement, stream_per_section
     from app.ingestion.redaction import get_redaction_engine
-    from app.agents.foundry_agent import stream_per_requirement, stream_per_section, stream_map_reduce
+    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
     from app.outputs.docx_writer import parse_template_sections
 
     blob_service = BlobServiceClient(
@@ -757,9 +775,9 @@ async def generate_section(
     user: UserClaims = Depends(get_current_user),
 ):
     """Generate content for a single template section using the provided prompt and responses."""
-    from app.agents.foundry_agent import _get_agents_client, _ensure_agent, _DRAFT_AGENT_NAME
-    from app.agents.foundry_agent import _post_generation_guard
     from azure.ai.agents.models import MessageRole
+
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client, _post_generation_guard
 
     agents_client = _get_agents_client()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
@@ -834,13 +852,13 @@ async def generate_doc(
     Uses the template sections to organize responses into coherent narratives,
     then produces DOCX + XLSX outputs.
     """
-    from app.agents.foundry_agent import _get_agents_client, _ensure_agent, _DRAFT_AGENT_NAME
-    from app.agents.foundry_agent import _post_generation_guard
-    from app.outputs.docx_writer import generate_docx, parse_template_sections
-    from app.outputs.xlsx_writer import generate_xlsx
     from azure.ai.agents.models import MessageRole
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
+
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client, _post_generation_guard
+    from app.outputs.docx_writer import generate_docx, parse_template_sections
+    from app.outputs.xlsx_writer import generate_xlsx
 
     responses = req.responses
     if not responses and not req.section_narratives:
@@ -1128,6 +1146,7 @@ async def kb_upload(
 
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
+
     from app.ingestion.kb_ingest import ingest_blob
 
     blob_name = f"{client_id}/{project_id}/{solution_area}/{file.filename}"
@@ -1204,10 +1223,11 @@ async def kb_delete(
     settings: Settings = Depends(get_settings),
 ):
     """Delete a KB document from Blob Storage and remove its chunks from the search index."""
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient
-    from azure.search.documents import SearchClient
     import hashlib
+
+    from azure.identity import DefaultAzureCredential
+    from azure.search.documents import SearchClient
+    from azure.storage.blob import BlobServiceClient
 
     credential = DefaultAzureCredential()
 
@@ -1271,6 +1291,7 @@ async def kb_reindex(
     """Re-index all documents in the KB blob container into the search index."""
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
+
     from app.ingestion.kb_ingest import ingest_blob
 
     blob_service = BlobServiceClient(
@@ -1369,7 +1390,7 @@ async def template_info():
         return {
             "exists": True,
             "size_bytes": stat.st_size,
-            "last_modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "last_modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
             "sections": sections,
         }
     return {"exists": False, "sections": []}

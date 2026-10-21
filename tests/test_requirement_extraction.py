@@ -1,15 +1,11 @@
 """Tests for RFP requirement extraction."""
 
-import pytest
 
 from app.ingestion.rfp_extract import (
     Requirement,
     RFPExtractionResult,
     extract_rfp_structure,
-    extract_text_from_docx,
-    extract_text_from_pdf,
 )
-
 
 # ── Sample RFP text ──────────────────────────────────────
 
