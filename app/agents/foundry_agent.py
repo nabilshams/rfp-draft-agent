@@ -23,10 +23,10 @@ from typing import Any
 from azure.ai.agents import AgentsClient
 from azure.ai.agents.models import BingGroundingTool, MessageRole
 from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
 
+from app.agents import kb_search
+from app.agents.kb_search import RetrievedContext
 from app.agents.prompts import AGENT_INSTRUCTIONS
-from app.agents.retrieval import build_odata_filter
 from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
 
@@ -186,87 +186,6 @@ def setup_agents() -> dict[str, str]:
     return {_DRAFT_AGENT_NAME: draft_id, _QA_AGENT_NAME: qa_id}
 
 
-def _search_knowledge_base(
-    *,
-    query: str,
-    client_id: str,
-    project_id: str,
-    solution_area: str | None,
-    user_oid: str,
-    user_groups: list[str] | None,
-    top: int = 8,
-) -> list[dict[str, Any]]:
-    """Run a hybrid search against AI Search with DLAC + segmentation filters.
-
-    Returns a list of dicts with keys: content, title, source_url, score.
-    """
-    settings = get_settings()
-    search_endpoint = settings.azure_ai_search_endpoint or (
-        f"https://{settings.azure_ai_search_connection_name}.search.windows.net"
-    )
-
-    odata_filter = build_odata_filter(
-        client_id=client_id,
-        project_id=project_id,
-        solution_area=solution_area,
-        user_oid=user_oid,
-        user_groups=user_groups,
-    )
-
-    search_client = SearchClient(
-        endpoint=search_endpoint,
-        index_name=settings.ai_search_index_name,
-        credential=DefaultAzureCredential(),
-    )
-
-    results = search_client.search(
-        search_text=query,
-        filter=odata_filter,
-        top=top,
-        select=["content", "title", "source_url"],
-    )
-
-    docs = []
-    for r in results:
-        docs.append({
-            "content": r.get("content", ""),
-            "title": r.get("title", ""),
-            "source_url": r.get("source_url", ""),
-            "score": r.get("@search.score", 0),
-        })
-    logger.info("Search returned %d results for query: %.60s", len(docs), query)
-    return docs
-
-
-
-def _format_context(kb_docs: list[dict[str, Any]]) -> str:
-    """Format retrieved KB documents into a context block for the agent prompt."""
-    if not kb_docs:
-        return "\n## Internal Knowledge Base\n[No matching documents found in KB.]\n"
-
-    parts = ["## Internal Knowledge Base Sources\n"]
-    for i, doc in enumerate(kb_docs, 1):
-        parts.append(f"### KB Source {i}: {doc['title']}")
-        parts.append(f"**URL:** {doc['source_url']}")
-        parts.append(f"**Content:**\n{doc['content'][:1500]}\n")
-    return "\n".join(parts)
-
-
-def _validate_citations(response_text: str, retrieved_urls: set[str]) -> str:
-    """Strip any citations that reference URLs not actually retrieved."""
-    # Lightweight check: look for markdown-link patterns and verify
-    import re
-
-    def _check_link(m: re.Match) -> str:
-        url = m.group(2)
-        if url in retrieved_urls or url.startswith("#"):
-            return m.group(0)
-        logger.warning("Removing fabricated citation URL: %s", url)
-        return m.group(1)  # keep the link text, drop the URL
-
-    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _check_link, response_text)
-
-
 def _post_generation_guard(text: str) -> tuple[str, list[dict]]:
     """Run the redaction engine's output scanner.  Returns (safe_text, violations)."""
     engine = get_redaction_engine()
@@ -353,14 +272,25 @@ def run_agent_prompt(agent_id: str, content: str) -> AgentRunResult:
                 if hasattr(block, "text"):
                     result.text += block.text.value
                     for ann in getattr(block.text, "annotations", None) or []:
-                        if hasattr(ann, "url"):
-                            result.annotation_urls.add(ann.url)
+                        # Web citations carry their URL under url_citation; plain annotations may have it directly.
+                        url = getattr(getattr(ann, "url_citation", None), "url", None) or getattr(ann, "url", None)
+                        if url:
+                            result.annotation_urls.add(url)
         return result
     finally:
         _delete_thread(client, thread.id)
 
 
 # ── Public API ────────────────────────────────────────────────
+
+
+def _parse_requirements(requirements_json: str) -> list[dict[str, Any]]:
+    """The requirement dicts in a JSON array, or an empty list if it isn't one."""
+    try:
+        parsed = json.loads(requirements_json)
+    except json.JSONDecodeError:
+        return []
+    return [r for r in parsed if isinstance(r, dict)] if isinstance(parsed, list) else []
 
 
 def run_draft(
@@ -376,24 +306,18 @@ def run_draft(
 ) -> dict[str, Any]:
     """Create an agent, submit the full RFP, and return the draft JSON."""
 
-    # Step 1: Retrieve relevant knowledge base content
-    search_query = requirements_json[:500]  # Use requirements as search query
-    retrieved_docs = _search_knowledge_base(
-        query=search_query,
+    # Step 1: Retrieve knowledge-base content per requirement, then share the best of it across the draft
+    requirements = _parse_requirements(requirements_json) or [{"text": requirements_json[:1000]}]
+    per_requirement = kb_search.retrieve_for_requirements(
+        requirements,
         client_id=client_id,
         project_id=project_id,
         solution_area=solution_area,
         user_oid=user_oid,
         user_groups=user_groups,
     )
-
-    # Step 1b: Search Microsoft documentation
-
-    context_block = _format_context(retrieved_docs)
-
-    # Collect retrieved URLs for citation hygiene
-    all_docs = retrieved_docs
-    retrieved_urls = {d["source_url"] for d in all_docs if d.get("source_url")}
+    context = kb_search.merge_contexts(per_requirement)
+    evidence_found = {str(r.get("id", "")): c.found for r, c in zip(requirements, per_requirement)}
 
     # Step 2: Get or create the persistent draft agent
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
@@ -418,7 +342,7 @@ def run_draft(
         f"  - \"risks\": array of strings\n"
         f"  - \"followups\": array of strings\n\n"
         f"Use the following retrieved sources to ground your answers:\n\n"
-        f"{context_block}\n\n"
+        f"{context.block}\n\n"
         f"Here are the requirements to respond to:\n{requirements_json}"
     )
 
@@ -431,17 +355,14 @@ def run_draft(
     if not result.has_response:
         return {"error": "No assistant response received"}
 
-    raw_text = result.text
-    retrieved_urls = result.annotation_urls
-
-    # Citation hygiene
-    clean_text = _validate_citations(raw_text, retrieved_urls)
-
     # Post-generation guardrail
-    safe_text, violations = _post_generation_guard(clean_text)
+    safe_text, violations = _post_generation_guard(result.text)
 
     if violations:
         logger.warning("Draft contained %d sensitive patterns – redacted", len(violations))
+
+    # Only sources that were retrieved for this draft (or returned by web grounding) may be cited.
+    allowed_urls = context.urls | result.annotation_urls
 
     # Parse JSON from the agent's response
     try:
@@ -451,15 +372,20 @@ def run_draft(
             json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in json_str:
             json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        draft = json.loads(json_str.strip())
+        draft = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
     except (json.JSONDecodeError, IndexError):
-        draft = {"raw_response": safe_text, "parse_error": True}
+        draft = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
+
+    for response in draft.get("responses", []) if isinstance(draft, dict) else []:
+        if isinstance(response, dict):
+            response["kb_evidence_found"] = evidence_found.get(str(response.get("requirement_id", "")), context.found)
 
     draft["_meta"] = {
         "rfp_id": rfp_id,
         "agent_id": agent_id,
         "run_id": result.run_id,
         "violations_redacted": len(violations),
+        "kb_sources": len(context.docs),
     }
     return draft
 
@@ -467,7 +393,7 @@ def run_draft(
 def _answer_single_requirement(
     *,
     requirement: dict[str, Any],
-    context_block: str,
+    context: RetrievedContext,
     tone: str,
     agent_id: str,
     user_context: str = "",
@@ -480,7 +406,7 @@ def _answer_single_requirement(
     if user_context:
         context_preamble = f"## Company / Response Context\n{user_context}\n\n"
 
-    result = run_agent_prompt(
+    run_result = run_agent_prompt(
         agent_id,
         (
             f"Respond to this single RFP requirement. Tone: {tone}.\n\n"
@@ -495,7 +421,7 @@ def _answer_single_requirement(
             f"- \"risks\": array of strings\n"
             f"- \"followups\": array of strings\n\n"
             f"Ground your answer using these sources:\n\n"
-            f"{context_block}\n\n"
+            f"{context.block}\n\n"
             f"Requirement ID: {req_id}\n"
             f"Category: {requirement.get('category', 'general')}\n"
             f"Priority: {requirement.get('priority', 'standard')}\n"
@@ -503,20 +429,23 @@ def _answer_single_requirement(
         ),
     )
 
-    if not result.completed:
-        logger.error("Requirement %s run failed: %s", req_id, result.status)
+    if not run_result.completed:
+        logger.error("Requirement %s run failed: %s", req_id, run_result.status)
         return {
             "requirement_id": req_id,
             "requirement_text": req_text,
-            "answer_markdown": f"Agent run failed with status: {result.status}",
+            "answer_markdown": f"Agent run failed with status: {run_result.status}",
             "meets": "No",
             "evidence": [],
             "assumptions": [],
             "risks": ["Agent processing failed"],
             "followups": [],
+            "kb_evidence_found": context.found,
         }
 
-    safe_text, _ = _post_generation_guard(result.text)
+    safe_text, _ = _post_generation_guard(run_result.text)
+    # Only sources retrieved for this requirement (or returned by web grounding) may be cited.
+    allowed_urls = context.urls | run_result.annotation_urls
 
     try:
         json_str = safe_text
@@ -524,19 +453,21 @@ def _answer_single_requirement(
             json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in json_str:
             json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        result = json.loads(json_str.strip())
-        result["requirement_id"] = req_id
-        return result
+        answer = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
+        answer["requirement_id"] = req_id
+        answer["kb_evidence_found"] = context.found
+        return answer
     except (json.JSONDecodeError, IndexError):
         return {
             "requirement_id": req_id,
             "requirement_text": req_text,
-            "answer_markdown": safe_text,
+            "answer_markdown": kb_search.sanitize_citations(safe_text, allowed_urls),
             "meets": "Partial",
             "evidence": [],
             "assumptions": [],
             "risks": [],
             "followups": [],
+            "kb_evidence_found": context.found,
         }
 
 
@@ -545,7 +476,7 @@ def _generate_section_narrative(
     section_name: str,
     req_ids: list[str],
     section_reqs: list[dict[str, Any]],
-    context_block: str,
+    context: RetrievedContext,
     tone: str,
     agent_id: str,
 ) -> dict[str, Any]:
@@ -565,7 +496,7 @@ def _generate_section_narrative(
             f"Write a coherent, professional narrative (not a list of individual answers). "
             f"Weave the requirements naturally into the narrative. "
             f"Reference requirement IDs in brackets where relevant, e.g. [F1].\n\n"
-            f"Use these sources for grounding:\n{context_block}\n\n"
+            f"Use these sources for grounding:\n{context.block}\n\n"
             f"Return ONLY a JSON object:\n"
             f"{{\"section_name\": \"{section_name}\", "
             f"\"narrative_markdown\": \"<your section text>\", "
@@ -581,17 +512,18 @@ def _generate_section_narrative(
         }
 
     safe, _ = _post_generation_guard(result.text)
+    allowed_urls = context.urls | result.annotation_urls
     try:
         text = safe
         if "```json" in text:
             text = text.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in text:
             text = text.split("```", 1)[1].split("```", 1)[0]
-        section_data = json.loads(text.strip())
+        section_data = kb_search.sanitize_citations(json.loads(text.strip()), allowed_urls)
     except Exception:
         section_data = {
             "section_name": section_name,
-            "narrative_markdown": safe,
+            "narrative_markdown": kb_search.sanitize_citations(safe, allowed_urls),
             "requirement_ids": req_ids,
         }
     return section_data
@@ -640,17 +572,19 @@ def _generate_section_narrative_from_answers(
         }
 
     safe, _ = _post_generation_guard(result.text)
+    # The answers were already checked; the narrative may cite only what they cite.
+    allowed_urls = kb_search.cited_urls(section_answers) | result.annotation_urls
     try:
         text = safe
         if "```json" in text:
             text = text.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in text:
             text = text.split("```", 1)[1].split("```", 1)[0]
-        section_data = json.loads(text.strip())
+        section_data = kb_search.sanitize_citations(json.loads(text.strip()), allowed_urls)
     except Exception:
         section_data = {
             "section_name": section_name,
-            "narrative_markdown": safe,
+            "narrative_markdown": kb_search.sanitize_citations(safe, allowed_urls),
             "requirement_ids": req_ids,
         }
     return section_data
@@ -671,17 +605,15 @@ def stream_per_requirement(
     Yields one response dict per requirement with requirement_id, answer, meets, etc.
     Good for: compliance-heavy RFPs where each requirement needs individual assessment.
     """
-    # Retrieve context once (shared across all requirements)
-    combined_text = " ".join(r.get("text", "")[:100] for r in requirements[:10])
-    retrieved_docs = _search_knowledge_base(
-        query=combined_text[:500],
+    # Retrieve per requirement: each one gets the documents that match *its* text
+    retriever = kb_search.RequirementRetriever(
+        requirements,
         client_id=client_id,
         project_id=project_id,
         solution_area=solution_area,
         user_oid=user_oid,
         user_groups=user_groups,
     )
-    context_block = _format_context(retrieved_docs)
 
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     logger.info("Streaming draft: %d requirements, agent=%s", len(requirements), agent_id)
@@ -691,7 +623,7 @@ def stream_per_requirement(
         try:
             result = _answer_single_requirement(
                 requirement=req,
-                context_block=context_block,
+                context=retriever.context(i),
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
@@ -708,6 +640,7 @@ def stream_per_requirement(
                 "assumptions": [],
                 "risks": [str(exc)],
                 "followups": [],
+                "kb_evidence_found": False,
             }
 
 
@@ -734,17 +667,19 @@ def stream_per_section(
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     section_workers = max(1, settings.section_parallelism)
 
-    # Retrieve context once
-    combined_text = " ".join(r.get("text", "")[:100] for r in requirements[:10])
-    retrieved_docs = _search_knowledge_base(
-        query=combined_text[:500],
+    # Retrieve per requirement; each section's narrative then draws on its own requirements' documents
+    contexts = kb_search.retrieve_for_requirements(
+        requirements,
         client_id=client_id,
         project_id=project_id,
         solution_area=solution_area,
         user_oid=user_oid,
         user_groups=user_groups,
     )
-    context_block = _format_context(retrieved_docs)
+    index_by_id = {r.get("id", "?"): i for i, r in enumerate(requirements)}
+
+    def section_context(req_ids: list[str]) -> RetrievedContext:
+        return kb_search.merge_contexts([contexts[index_by_id[rid]] for rid in req_ids if rid in index_by_id])
 
     section_names = [s["heading"] for s in template_sections] if template_sections else [
         "Executive Summary", "Solution Overview", "Technical Approach",
@@ -808,7 +743,7 @@ def stream_per_section(
                 section_name=section_name,
                 req_ids=req_ids,
                 section_reqs=section_reqs,
-                context_block=context_block,
+                context=section_context(req_ids),
                 tone=tone,
                 agent_id=agent_id,
             )
@@ -822,7 +757,7 @@ def stream_per_section(
                     section_name=section_name,
                     req_ids=req_ids,
                     section_reqs=section_reqs,
-                    context_block=context_block,
+                    context=section_context(req_ids),
                     tone=tone,
                     agent_id=agent_id,
                 )
@@ -855,7 +790,7 @@ def stream_per_section(
         try:
             result = _answer_single_requirement(
                 requirement=req,
-                context_block=context_block,
+                context=contexts[idx - 1],
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
@@ -905,17 +840,15 @@ def stream_map_reduce(
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     section_workers = max(1, settings.section_parallelism)
 
-    # Retrieve context once
-    combined_text = " ".join(r.get("text", "")[:100] for r in requirements[:10])
-    retrieved_docs = _search_knowledge_base(
-        query=combined_text[:500],
+    # Retrieve per requirement (on demand, in Phase 1)
+    retriever = kb_search.RequirementRetriever(
+        requirements,
         client_id=client_id,
         project_id=project_id,
         solution_area=solution_area,
         user_oid=user_oid,
         user_groups=user_groups,
     )
-    context_block = _format_context(retrieved_docs)
 
     section_names = [s["heading"] for s in template_sections] if template_sections else [
         "Executive Summary", "Solution Overview", "Technical Approach",
@@ -932,7 +865,7 @@ def stream_map_reduce(
         try:
             result = _answer_single_requirement(
                 requirement=req,
-                context_block=context_block,
+                context=retriever.context(i),
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
@@ -1055,18 +988,19 @@ def run_single_answer(
 ) -> dict[str, Any]:
     """Answer a single question using the grounded agent."""
 
-    # Retrieve relevant context
-    retrieved_docs = _search_knowledge_base(
-        query=question,
-        client_id=client_id,
-        project_id=project_id,
-        solution_area=solution_area,
-        user_oid=user_oid,
-        user_groups=user_groups,
+    # Retrieve relevant context (hybrid: keyword + vector)
+    (vector,) = kb_search.embed_queries([question])
+    context = RetrievedContext(
+        kb_search.search_kb(
+            query=question,
+            vector=vector,
+            client_id=client_id,
+            project_id=project_id,
+            solution_area=solution_area,
+            user_oid=user_oid,
+            user_groups=user_groups,
+        )
     )
-
-    # Also search Microsoft documentation
-    context_block = _format_context(retrieved_docs)
 
     # Get or create the persistent QA agent
     agent_id = _ensure_agent(_QA_AGENT_NAME)
@@ -1077,7 +1011,7 @@ def run_single_answer(
             f"Answer the following question using ONLY the retrieved sources below.  "
             f"Return a JSON object with answer_markdown, evidence, assumptions, "
             f"and followups.\n\n"
-            f"{context_block}\n\n"
+            f"{context.block}\n\n"
             f"Question: {question}"
         ),
     )
@@ -1086,6 +1020,7 @@ def run_single_answer(
         return {"error": f"Agent run ended with status: {result.status}"}
 
     safe_text, violations = _post_generation_guard(result.text)
+    allowed_urls = context.urls | result.annotation_urls
 
     try:
         json_str = safe_text
@@ -1093,6 +1028,9 @@ def run_single_answer(
             json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in json_str:
             json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        return json.loads(json_str.strip())
+        answer = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
     except (json.JSONDecodeError, IndexError):
-        return {"raw_response": safe_text, "parse_error": True}
+        answer = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
+    if isinstance(answer, dict):
+        answer["kb_evidence_found"] = context.found
+    return answer

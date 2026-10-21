@@ -4,7 +4,7 @@ import itertools
 from types import SimpleNamespace
 
 import pytest
-from azure.ai.agents.models import MessageRole
+from azure.ai.agents.models import MessageRole, MessageTextUrlCitationAnnotation, MessageTextUrlCitationDetails
 
 from app.agents import foundry_agent
 
@@ -12,9 +12,10 @@ from app.agents import foundry_agent
 class FakeAgentsClient:
     """Minimal stand-in for AgentsClient that records thread deletions and run cancellations."""
 
-    def __init__(self, statuses, reply="Hello", fail_delete=False, fail_message_create=False):
+    def __init__(self, statuses, reply="Hello", fail_delete=False, fail_message_create=False, annotations=None):
         self._statuses = list(statuses)
         self._reply = reply
+        self._annotations = annotations if annotations is not None else [SimpleNamespace(url="https://example.com/source")]
         self._fail_delete = fail_delete
         self._fail_message_create = fail_message_create
         self.deleted: list[str] = []
@@ -41,8 +42,7 @@ class FakeAgentsClient:
 
     def _message_list(self, thread_id):
         self.messages_listed = True
-        annotation = SimpleNamespace(url="https://example.com/source")
-        block = SimpleNamespace(text=SimpleNamespace(value=self._reply, annotations=[annotation]))
+        block = SimpleNamespace(text=SimpleNamespace(value=self._reply, annotations=self._annotations))
         return [
             SimpleNamespace(role=MessageRole.USER, content=[]),
             SimpleNamespace(role=MessageRole.AGENT, content=[block]),
@@ -84,6 +84,29 @@ def test_completed_run_returns_reply_and_deletes_thread(install_client):
     assert result.annotation_urls == {"https://example.com/source"}
     assert result.run_id == "run-1"
     assert client.deleted == ["thread-1"]
+
+
+def test_web_citation_urls_are_collected_from_real_sdk_annotations(install_client):
+    # The SDK puts a citation's URL under url_citation.url, not directly on the annotation.
+    annotation = MessageTextUrlCitationAnnotation(
+        text="[1]",
+        start_index=0,
+        end_index=3,
+        url_citation=MessageTextUrlCitationDetails(url="https://learn.microsoft.com/azure/x", title="X"),
+    )
+    client = FakeAgentsClient(["completed"], annotations=[annotation])
+    install_client(client)
+
+    result = foundry_agent.run_agent_prompt("agent-1", "question")
+
+    assert result.annotation_urls == {"https://learn.microsoft.com/azure/x"}
+
+
+def test_annotations_without_a_url_are_ignored(install_client):
+    client = FakeAgentsClient(["completed"], annotations=[SimpleNamespace(type="file_citation")])
+    install_client(client)
+
+    assert foundry_agent.run_agent_prompt("agent-1", "question").annotation_urls == set()
 
 
 def test_failed_run_reports_status_without_reading_messages(install_client):

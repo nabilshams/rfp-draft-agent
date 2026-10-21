@@ -1,0 +1,7 @@
+# Example retrieval evaluation cases: adapt these to the documents in YOUR knowledge base.
+# One JSON object per line. "expected_sources" are substrings of a document's title or URL;
+# a case counts as a hit when any of them is among the top results.
+# Run:  python scripts/eval_retrieval.py evals/retrieval_cases.example.jsonl --client-id <id> --project-id <id> --oid <object id>
+{"id": "encryption-at-rest", "query": "How is customer data encrypted at rest?", "expected_sources": ["security", "encryption"]}
+{"id": "support-hours", "query": "What support hours and response times do you provide?", "expected_sources": ["support"]}
+{"id": "data-residency", "query": "Can data be kept within a specific country or region?", "expected_sources": ["residency", "sovereign"]}
