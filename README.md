@@ -137,8 +137,11 @@ docker-compose up --build
 ### 5. Run tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v --cov=app
 ```
+
+CI fails if coverage of `app/` drops below the `fail_under` threshold in `pyproject.toml`. The UI escaping tests
+run the helpers in `app/static/safe.js` with Node.js and are skipped if it isn't installed.
 
 ### 6. Run the demo
 
@@ -507,6 +510,15 @@ RFPs, KB documents, user context and questions are third-party text, so they are
 These reduce the risk; they don't remove it. A model can still be influenced by hostile text, which is why the
 compliance matrix and draft need human review.
 
+### Web UI safety
+
+RFP content, model output and server messages are untrusted, so the UI never inserts them into the page as markup:
+text goes in with `textContent`, or through `esc()` (escapes `& < > " '`) when an HTML string is built, and links
+built from model output go through `safeUrl()` (only `http`/`https`). There are no inline scripts or event
+handlers, and the UI is served with a Content-Security-Policy that only allows scripts from `/static`
+(`script-src 'self'`), plus `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`. `tests/test_ui_safety.py`
+checks the helpers, the page structure and the headers.
+
 ---
 
 ## Project Structure
@@ -514,15 +526,26 @@ compliance matrix and draft need human review.
 ```
 rfp-draft-agent/
 ├── app/
-│   ├── main.py                    # FastAPI entry point
-│   ├── config.py                  # Settings from env vars
+│   ├── main.py                    # App assembly: lifespan, routers, security headers, UI
+│   ├── config.py                  # Settings from env vars (incl. derived endpoints)
+│   ├── azure_clients.py           # Shared, cached Azure SDK clients (blob, search, OpenAI, agents)
+│   ├── schemas.py                 # Request bodies
+│   ├── logging_setup.py           # Console logging + live log stream
+│   ├── metrics.py                 # Request counters for /metrics
+│   ├── routers/                   # One module per area: ops, rfp, draft, kb, outputs, template
+│   ├── services/                  # Steps shared by routers: RFP loading/publishing, KB access, uploads
+│   ├── static/                    # Web UI: index.html, app.css, app.js, safe.js (escaping helpers)
 │   ├── auth/
 │   │   ├── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)
 │   │   ├── access.py              # Ownership, sharing and admin rules
 │   │   └── ratelimit.py           # Per-user request limiter
 │   ├── validation.py              # Checks for ids, file names and blob names
 │   ├── agents/
-│   │   ├── foundry_agent.py       # Foundry agent orchestration
+│   │   ├── lifecycle.py           # Persistent Foundry agents: find, create, update
+│   │   ├── runner.py              # Running a prompt on an agent; output guard and JSON parsing
+│   │   ├── answers.py             # Full draft, single requirement, single question
+│   │   ├── sections.py            # Section classification and narratives
+│   │   ├── strategies.py          # Per-requirement, per-section and map-reduce streaming
 │   │   ├── kb_search.py           # Hybrid KB search, query embedding, citation checks
 │   │   ├── normalize.py           # Shape checks on model output
 │   │   ├── prompts.py             # System instructions + JSON schemas
@@ -552,14 +575,11 @@ rfp-draft-agent/
 │   ├── create_template.py         # Generate the DOCX template
 │   ├── setup_auth.py              # Create the Entra app registration for Easy Auth (azd)
 │   ├── eval_retrieval.py          # Compare keyword / hybrid / semantic retrieval on your KB
+│   ├── list_connections.py        # List Foundry project connections (find the BING_CONNECTION_ID)
 │   └── demo.py                    # End-to-end demo script
 ├── evals/
 │   └── retrieval_cases.example.jsonl   # Example evaluation cases (adapt to your KB)
-├── tests/
-│   ├── test_redaction.py
-│   ├── test_requirement_extraction.py
-│   ├── test_security_filters.py
-│   └── test_output_generation.py
+├── tests/                         # pytest suite; Azure and the agent are faked (conftest.py blocks real clients)
 ├── .github/workflows/ci.yml
 ├── Dockerfile
 ├── docker-compose.yml

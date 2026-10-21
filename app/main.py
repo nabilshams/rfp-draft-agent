@@ -17,7 +17,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -63,6 +63,34 @@ app = FastAPI(
 
 for module in (ops, rfp, draft, kb, outputs, template):
     app.include_router(module.router)
+
+# The UI only runs scripts served from /static (it has no inline handlers), so an injected script
+# can't run even if some untrusted text slipped into the page unescaped.
+_UI_CSP = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self' ws: wss:",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ]
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Content-Security-Policy"] = _UI_CSP
+        response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 # ── Static files + UI ────────────────────────────────────
 _static_dir = Path(__file__).parent / "static"
