@@ -42,6 +42,9 @@ param entraClientId string = ''
 @description('Client secret of the Entra app registration. Required when authMode is "easyauth".')
 param entraClientSecret string = ''
 
+@description('Comma-separated object IDs of users who can manage every RFP and KB document, re-index the knowledge base and replace the shared template. scripts/setup_auth.py sets this to the signed-in user.')
+param adminOids string = ''
+
 @description('Expected token audience (jwt mode). Defaults to the client ID when empty.')
 param entraAudience string = ''
 
@@ -93,6 +96,7 @@ module resources 'resources.bicep' = {
     entraClientId: authMode == 'disabled' ? 'not-configured' : entraClientId
     entraClientSecret: authMode == 'easyauth' ? entraClientSecret : 'not-used'
     entraAudience: entraAudience
+    adminOids: adminOids
     bingConnectionId: bingConnectionId
     allowedIpRanges: allowedIpRanges
     chatModelName: chatModelName

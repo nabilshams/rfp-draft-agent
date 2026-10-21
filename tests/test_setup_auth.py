@@ -23,12 +23,13 @@ BASE_ENV = (
 class FakeCli(setup_auth.Cli):
     """Records every command that would be executed and answers from a script."""
 
-    def __init__(self, *, env_text=BASE_ENV, existing_app="", sp_exists=True, dry_run=False):
+    def __init__(self, *, env_text=BASE_ENV, existing_app="", sp_exists=True, dry_run=False, no_signed_in_user=False):
         self.messages: list[str] = []
         super().__init__(dry_run, echo=self.messages.append)
         self.env_text = env_text
         self.existing_app = existing_app
         self.sp_exists = sp_exists
+        self.no_signed_in_user = no_signed_in_user
         self.executed: list[list[str]] = []
 
     def _run(self, args):
@@ -45,6 +46,10 @@ class FakeCli(setup_auth.Cli):
             raise setup_auth.SetupError("service principal not found")
         if args[:5] == ["az", "ad", "app", "credential", "reset"]:
             return "generated-secret"
+        if args[:4] == ["az", "ad", "signed-in-user", "show"]:
+            if self.no_signed_in_user:
+                raise setup_auth.SetupError("no signed-in user")
+            return "me-oid"
         return ""
 
     def commands(self, *prefix):
@@ -71,8 +76,29 @@ def test_new_app_is_created_with_the_callback_url_and_values_are_stored_in_azd()
         "ENTRA_CLIENT_ID": "new-app-id",
         "ENTRA_TENANT_ID": "tenant-1",
         "AUTH_MODE": "easyauth",
+        "ADMIN_OIDS": "me-oid",
         "ENTRA_CLIENT_SECRET": "generated-secret",
     }
+
+
+def test_the_signed_in_user_becomes_an_administrator_unless_one_is_already_set():
+    fresh = FakeCli()
+    setup_auth.setup(fresh)
+    assert fresh.azd_settings()["ADMIN_OIDS"] == "me-oid"
+
+    configured = FakeCli(env_text=BASE_ENV + 'ADMIN_OIDS="someone-else"\n')
+    setup_auth.setup(configured)
+    assert "ADMIN_OIDS" not in configured.azd_settings()  # an existing value is left alone
+    assert configured.commands("az", "ad", "signed-in-user") == []
+
+
+def test_setup_continues_when_there_is_no_signed_in_user():
+    cli = FakeCli(no_signed_in_user=True)
+    setup_auth.setup(cli)
+
+    assert "ADMIN_OIDS" not in cli.azd_settings()
+    assert cli.azd_settings()["AUTH_MODE"] == "easyauth"
+    assert any("set ADMIN_OIDS yourself" in message for message in cli.messages)
 
 
 def test_service_principal_is_created_only_when_missing():
@@ -142,7 +168,7 @@ def test_dry_run_changes_nothing():
     setup_auth.setup(cli)
 
     executed = [" ".join(c[:4]) for c in cli.executed]
-    assert executed == ["azd env get-values", "az ad app list"]
+    assert executed == ["azd env get-values", "az ad app list", "az ad signed-in-user show"]
     assert any(message.startswith("[dry-run] az ad app create") for message in cli.messages)
     assert any("ENTRA_CLIENT_SECRET ***" in message for message in cli.messages)
 

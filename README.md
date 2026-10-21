@@ -107,6 +107,9 @@ cp .env.example .env
 | `PARALLELISM` | Number of Uvicorn worker processes when running via `python -m app.main` (default: `1`) |
 | `SECTION_PARALLELISM` | Number of sections synthesized concurrently in `per_section` and map-reduce phase 2 (default: `1`) |
 | `RUN_TIMEOUT_SECONDS` | Longest a single agent run may take before it is cancelled and reported as `timed_out` (default: `600`) |
+| `ADMIN_OIDS` | Comma-separated object IDs of administrators (see [Access model](#access-model)); empty by default |
+| `MAX_UPLOAD_MB` | Largest accepted upload (default: `25`) |
+| `RATE_LIMIT_PER_MINUTE` | Per-user requests per minute on the expensive endpoints (default: `60`, `0` = off) |
 
 ### 3. Generate the DOCX template
 
@@ -147,10 +150,11 @@ python scripts/demo.py --base-url http://localhost:8000
 Liveness probe.
 
 ### `GET /metrics`
-Basic operational counters (uploads, drafts, etc.).
+Basic operational counters (uploads, drafts, etc.). Requires authentication (unless `AUTH_MODE=disabled`).
 
 ### `POST /rfp/upload`
-Upload an RFP document (PDF/DOCX).
+Upload an RFP document (PDF/DOCX/XLSX/CSV, up to `MAX_UPLOAD_MB`). The uploader becomes its owner; only the
+owner (or an admin) can extract, draft from or download outputs of it. See [Access model](#access-model).
 
 ```bash
 curl -X POST http://localhost:8000/rfp/upload \
@@ -226,24 +230,38 @@ curl -X POST http://localhost:8000/answer \
   }'
 ```
 
+### `POST /kb/upload`
+Upload a reference document (PDF/DOCX), store it and index it. The document is **private to you** unless you
+share it with groups you belong to.
+
+```bash
+curl -X POST http://localhost:8000/kb/upload \
+  -F "file=@solution_guide.pdf" \
+  -F "client_id=acme" -F "project_id=proj-42" -F "solution_area=cloud" \
+  -F "share_with_groups=group-id-1,group-id-2"   # optional; default: private
+```
+
+Stored as `client_id/project_id/solution_area/filename`. Uploading the same name again replaces the document
+and its sharing; only its owner (or an admin) can do that.
+
 ### `POST /kb/ingest`
-Ingest a knowledge-base document from Blob into the AI Search index.
+Re-ingest a KB document you own. Who can retrieve it comes from the sharing recorded on the document, never
+from the request (sending `oids` or `groups` is rejected with 422). An admin ingesting a document that has no
+recorded owner becomes its owner.
 
 ```bash
 curl -X POST http://localhost:8000/kb/ingest \
   -H "Content-Type: application/json" \
-  -d '{
-    "blob_name": "acme/proj-42/cloud/solution_guide.pdf",
-    "client_id": "acme",
-    "project_id": "proj-42",
-    "solution_area": "cloud",
-    "oids": ["user-oid-1"],
-    "groups": ["group-id-1"]
-  }'
+  -d '{ "blob_name": "acme/proj-42/cloud/solution_guide.pdf" }'
 ```
 
+### `GET /kb/list`, `DELETE /kb/delete?blob_name=…`, `POST /kb/reindex`
+`list` returns only documents you own or that are shared with one of your groups. `delete` is for the owner or
+an admin (a document you can't see returns 404; one you can see but don't own returns 403). `reindex`
+(admins only) re-indexes every document with the access recorded on it and skips documents that have no owner.
+
 ### `GET /outputs/{rfp_id}/{filename}`
-Download a generated output file.
+Download a generated output file (`draft.docx` or `compliance.xlsx`) of an RFP you own.
 
 ```bash
 curl -O http://localhost:8000/outputs/abc123/draft.docx
@@ -293,6 +311,7 @@ in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `M
 |---|---|---|
 | `AUTH_MODE` | `disabled` | `disabled` = no authentication (demo only). `easyauth` = users sign in with Entra ID through Container Apps built-in authentication; see [Authentication](#authentication). `jwt` = the app validates bearer tokens (needs `ENTRA_CLIENT_ID`; `ENTRA_TENANT_ID` defaults to your tenant). |
 | `ALLOWED_IP_RANGES` | _(empty = open)_ | Comma-separated CIDRs allowed to reach the app, e.g. `203.0.113.4/32,198.51.100.0/24`. |
+| `ADMIN_OIDS` | _(empty)_ | Object IDs of administrators who can manage every RFP and KB document. `scripts/setup_auth.py` sets it to the signed-in user. See [Access model](#access-model). |
 | `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When empty, agents are created without Bing grounding. |
 
 > **Security:** with the default `AUTH_MODE=disabled` the deployed app has **no authentication** and is
@@ -362,6 +381,31 @@ Following the **"Less is More"** principle:
 
 ## Security Model
 
+### Access model
+
+- **Ownership.** An RFP or KB document belongs to whoever uploaded it, recorded in the blob's metadata
+  (`owner_oid`, plus `shared_groups` for KB documents).
+- **RFPs** are private: only the owner (or an admin) can extract, draft from, or download outputs of one.
+- **KB documents** are private by default. The owner can share one with groups they belong to; members of
+  those groups can retrieve it and see it in `GET /kb/list`. Only the owner (or an admin) can re-ingest,
+  replace or delete it. Nobody can grant access to people or groups outside their own.
+- **Admins** are the object IDs in `ADMIN_OIDS` (comma-separated). They can manage every RFP and document,
+  re-index the knowledge base and replace the shared DOCX template (`POST /template/upload`). With
+  `AUTH_MODE=disabled` everyone is treated as an admin. `scripts/setup_auth.py` makes the person running it
+  the first admin; otherwise `azd env set ADMIN_OIDS <object-id>` (find yours with
+  `az ad signed-in-user show --query id -o tsv`).
+- **Documents with no recorded owner** (uploaded before ownership was recorded) are admin-only. An admin can
+  claim one with `POST /kb/ingest`; RFPs can be re-uploaded.
+- A resource you aren't allowed to see is reported as `404`, not `403`, so its existence isn't revealed.
+- **Input checks.** `client_id`, `project_id`, `solution_area` and `rfp_id` must be 1-64 plain characters
+  (letters, digits, `.` `_` `-`, inner spaces); file names may not contain path separators or control
+  characters; only `draft.docx` and `compliance.xlsx` can be downloaded. Violations return 422/400.
+- **Limits.** Uploads are capped at `MAX_UPLOAD_MB` (default 25; 413 above it) and each user is limited to
+  `RATE_LIMIT_PER_MINUTE` (default 60; 0 disables) requests per minute across the draft, answer, upload,
+  extract-ai, ingest, reindex and template endpoints (429 with `Retry-After`). The limiter is in-process, which
+  matches the single-replica deployment. The file is parsed by the server before the size check runs, so this
+  is a safeguard against accidents, not against deliberate flooding; put a gateway in front for that.
+
 ### Document-Level Access Control (DLAC)
 
 Every search query includes an OData filter:
@@ -394,7 +438,10 @@ rfp-draft-agent/
 │   ├── main.py                    # FastAPI entry point
 │   ├── config.py                  # Settings from env vars
 │   ├── auth/
-│   │   └── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)
+│   │   ├── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)
+│   │   ├── access.py              # Ownership, sharing and admin rules
+│   │   └── ratelimit.py           # Per-user request limiter
+│   ├── validation.py              # Checks for ids, file names and blob names
 │   ├── agents/
 │   │   ├── foundry_agent.py       # Foundry agent orchestration
 │   │   ├── prompts.py             # System instructions + JSON schemas

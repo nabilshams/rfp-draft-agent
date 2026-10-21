@@ -18,6 +18,7 @@ param entraClientId string
 @minLength(1)
 param entraClientSecret string
 param entraAudience string
+param adminOids string
 param bingConnectionId string
 param allowedIpRanges string
 param chatModelName string
@@ -284,6 +285,7 @@ var jwtEnv = authMode == 'jwt' ? concat([
   { name: 'ENTRA_CLIENT_ID', value: entraClientId }
 ], empty(entraAudience) ? [] : [{ name: 'ENTRA_AUDIENCE', value: entraAudience }]) : []
 var bingEnv = empty(bingConnectionId) ? [] : [{ name: 'BING_CONNECTION_ID', value: bingConnectionId }]
+var adminEnv = empty(adminOids) ? [] : [{ name: 'ADMIN_OIDS', value: adminOids }]
 
 var easyAuthSecretName = 'microsoft-provider-authentication-secret'
 var authSecrets = authMode == 'easyauth' ? [{ name: easyAuthSecretName, value: entraClientSecret }] : []
@@ -338,7 +340,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          env: concat(baseEnv, jwtEnv, bingEnv)
+          env: concat(baseEnv, jwtEnv, bingEnv, adminEnv)
           probes: [
             {
               type: 'Startup'

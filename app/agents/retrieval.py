@@ -80,3 +80,7 @@ def build_search_options(
 def _escape(value: str) -> str:
     """Escape single quotes in OData string literals."""
     return value.replace("'", "''")
+
+
+# Public name for code outside this module that builds OData filters.
+escape_odata_literal = _escape

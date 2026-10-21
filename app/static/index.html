@@ -91,6 +91,7 @@
         <div><label>Project ID</label><input type="text" id="kbProjectId" value="demo-project"></div>
         <div><label>Solution Area</label><input type="text" id="kbSolutionArea" value="general"></div>
       </div>
+      <div style="margin-bottom:12px"><label>Share with groups (optional)</label><input type="text" id="kbShareGroups" placeholder="Group IDs, comma-separated. Leave empty to keep the document private to you."></div>
       <div class="upload-zone" id="kbUploadZone"><div class="icon">&#128193;</div><p>Drag &amp; drop reference documents, or <strong>click to browse</strong></p><p style="font-size:11px;color:#999;margin-top:3px">PDF and DOCX. Multiple files OK.</p><div class="filename" id="kbFileNames" style="display:none"></div></div>
       <input type="file" id="kbFileInput" accept=".pdf,.docx" multiple style="display:none">
       <button class="btn btn-primary" id="btnKbUpload" disabled>Upload &amp; Index</button>
@@ -313,7 +314,7 @@ function setupDragDrop(zId,iId,cb){const z=document.getElementById(zId),i=docume
 
 // KB
 setupDragDrop('kbUploadZone','kbFileInput',files=>{const el=document.getElementById('kbFileNames');el.textContent=Array.from(files).map(f=>f.name).join(', ');el.style.display='block';document.getElementById('btnKbUpload').disabled=false});
-document.getElementById('btnKbUpload').addEventListener('click',async()=>{const files=document.getElementById('kbFileInput').files;if(!files.length)return;const ld=document.getElementById('kbLoading');ld.classList.add('visible');document.getElementById('btnKbUpload').disabled=true;const res=[];for(const file of files){const fd=new FormData();fd.append('file',file);fd.append('client_id',document.getElementById('kbClientId').value);fd.append('project_id',document.getElementById('kbProjectId').value);fd.append('solution_area',document.getElementById('kbSolutionArea').value);try{const r=await fetch(API+'/kb/upload',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const d=await r.json();res.push('OK: '+file.name+' ('+d.indexed_chunks+' chunks)')}catch(err){res.push('FAIL: '+file.name+': '+err.message)}}ld.classList.remove('visible');document.getElementById('btnKbUpload').disabled=false;document.getElementById('kbUploadResults').innerHTML='<div class="result-box" style="margin-top:10px">'+res.join('<br>')+'</div>';toast(res.length+' file(s) processed');loadKbList()});
+document.getElementById('btnKbUpload').addEventListener('click',async()=>{const files=document.getElementById('kbFileInput').files;if(!files.length)return;const ld=document.getElementById('kbLoading');ld.classList.add('visible');document.getElementById('btnKbUpload').disabled=true;const res=[];for(const file of files){const fd=new FormData();fd.append('file',file);fd.append('client_id',document.getElementById('kbClientId').value);fd.append('project_id',document.getElementById('kbProjectId').value);fd.append('solution_area',document.getElementById('kbSolutionArea').value);fd.append('share_with_groups',document.getElementById('kbShareGroups').value);try{const r=await fetch(API+'/kb/upload',{method:'POST',body:fd});if(!r.ok)throw new Error(await r.text());const d=await r.json();res.push('OK: '+file.name+' ('+d.indexed_chunks+' chunks)')}catch(err){res.push('FAIL: '+file.name+': '+err.message)}}ld.classList.remove('visible');document.getElementById('btnKbUpload').disabled=false;document.getElementById('kbUploadResults').innerHTML='<div class="result-box" style="margin-top:10px">'+res.join('<br>')+'</div>';toast(res.length+' file(s) processed');loadKbList()});
 async function loadKbList(){
   try{
     const r=await fetch(API+'/kb/list');const d=await r.json();
@@ -324,9 +325,10 @@ async function loadKbList(){
         '<div style="flex:1"><strong>'+escHtml(doc.filename)+'</strong>' +
           '<div class="doc-meta">'+escHtml(doc.client_id)+' / '+escHtml(doc.project_id)+' / '+escHtml(doc.solution_area)+' &middot; '+(doc.size_bytes/1024).toFixed(1)+' KB' +
           (doc.last_modified ? ' &middot; '+new Date(doc.last_modified).toLocaleDateString() : '') +
+          (doc.shared_with_groups && doc.shared_with_groups.length ? ' &middot; shared with '+doc.shared_with_groups.length+' group(s)' : ' &middot; private') +
           '</div>' +
         '</div>' +
-        '<button class="btn btn-sm" style="background:#fde7e9;color:var(--error);border:1px solid var(--error)" onclick="deleteKbDoc(\''+escHtml(doc.blob_name).replace(/'/g,"\\'")+'\')">Delete</button>' +
+        (doc.can_delete ? '<button class="btn btn-sm" style="background:#fde7e9;color:var(--error);border:1px solid var(--error)" onclick="deleteKbDoc(\''+escHtml(doc.blob_name).replace(/'/g,"\\'")+'\')">Delete</button>' : '') +
       '</li>'
     ).join('');
   }catch(err){document.getElementById('kbDocList').innerHTML='<li style="color:var(--error)">Error: '+err.message+'</li>'}

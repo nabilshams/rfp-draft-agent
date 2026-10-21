@@ -114,6 +114,14 @@ def setup(cli: Cli, *, env: str | None = None, rotate_secret: bool = False) -> N
         cli.echo("Keeping the existing client secret (use --rotate-secret to create a new one)")
 
     settings = [("ENTRA_CLIENT_ID", app_id), ("ENTRA_TENANT_ID", tenant_id), ("AUTH_MODE", "easyauth")]
+    if not values.get("ADMIN_OIDS"):
+        # Without an administrator nobody could re-index the knowledge base or replace the shared template.
+        try:
+            admin_oid = cli.read(["az", "ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"])
+            cli.echo(f"Making the signed-in user an administrator (ADMIN_OIDS={admin_oid})")
+            settings.append(("ADMIN_OIDS", admin_oid))
+        except SetupError:
+            cli.echo("Could not determine the signed-in user; set ADMIN_OIDS yourself: azd env set ADMIN_OIDS <object-id>")
     for name, value in settings:
         if value:
             cli.write(["azd", "env", "set", name, value, *env_flag])
