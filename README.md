@@ -105,6 +105,7 @@ cp .env.example .env
 | `EMBEDDING_MODEL_DEPLOYMENT_NAME` | Embedding model (default: `text-embedding-3-large`) |
 | `PARALLELISM` | Number of Uvicorn worker processes when running via `python -m app.main` (default: `1`) |
 | `SECTION_PARALLELISM` | Number of sections synthesized concurrently in `per_section` and map-reduce phase 2 (default: `1`) |
+| `RUN_TIMEOUT_SECONDS` | Longest a single agent run may take before it is cancelled and reported as `timed_out` (default: `600`) |
 
 ### 3. Generate the DOCX template
 
@@ -299,6 +300,17 @@ in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `M
 After the first deploy, upload documents through the UI or `POST /kb/upload` + `POST /kb/ingest`; the
 search index is created on first ingest. To run locally against the deployed resources, copy the values
 from `azd env get-values` into `.env`.
+
+**Runtime notes**
+
+- Endpoints that call Azure SDKs are plain `def` handlers, so FastAPI runs them in a worker thread pool and
+  the event loop (including `/health`) stays responsive during long drafts. The app runs one process and
+  one replica because the live log stream and `/metrics` counters are held in memory.
+- Each agent call uses a temporary Foundry thread that is deleted when the call finishes.
+- Container Apps ingress has a fixed [request timeout of 240 seconds](https://learn.microsoft.com/azure/container-apps/ingress-overview).
+  A single non-streaming `POST /draft` over a large RFP can exceed that and be cut off by the platform even
+  though the app keeps working. `POST /draft/stream` returns results as each requirement completes; whether
+  very long streams are also subject to the same limit has not been tested.
 
 ---
 

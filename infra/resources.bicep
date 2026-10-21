@@ -345,8 +345,11 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
                 path: '/health'
                 port: apiPort
               }
+              // Generous so CPU-heavy work in worker threads (parsing, document generation)
+              // can't get the container restarted by a slow /health response.
               periodSeconds: 30
-              failureThreshold: 3
+              timeoutSeconds: 5
+              failureThreshold: 5
             }
           ]
         }
