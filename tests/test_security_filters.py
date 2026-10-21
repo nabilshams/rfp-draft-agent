@@ -1,6 +1,5 @@
 """Tests for security filter (DLAC + segmentation) query building."""
 
-import pytest
 
 from app.agents.retrieval import build_odata_filter, build_search_options
 

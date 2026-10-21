@@ -12,11 +12,11 @@ in place.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
 import time
-import concurrent.futures
 from typing import Any
 
 from azure.ai.agents import AgentsClient
@@ -293,7 +293,6 @@ def run_draft(
     user_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create an agent, submit the full RFP, and return the draft JSON."""
-    settings = get_settings()
     agents_client = _get_agents_client()
 
     # Step 1: Retrieve relevant knowledge base content
@@ -1080,7 +1079,6 @@ def run_single_answer(
     user_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     """Answer a single question using the grounded agent."""
-    settings = get_settings()
     agents_client = _get_agents_client()
 
     # Retrieve relevant context
