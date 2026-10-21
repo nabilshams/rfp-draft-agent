@@ -48,8 +48,12 @@ param adminOids string = ''
 @description('Expected token audience (jwt mode). Defaults to the client ID when empty.')
 param entraAudience string = ''
 
-@description('Resource ID of an existing Grounding-with-Bing connection in the Foundry project. Leave empty to disable Bing grounding.')
+@description('Resource ID of an existing Grounding-with-Bing connection in the Foundry project. Leave empty to disable web search. When set, users can opt in per request; the query text is then sent to Bing, outside the Azure compliance boundary.')
 param bingConnectionId string = ''
+
+@secure()
+@description('Semicolon-separated customer names to redact from RFPs, requests, knowledge-base chunks and drafts (e.g. "Contoso Ltd;Fabrikam"). Kept as a secret, not in the repository.')
+param redactionCustomerNames string = ''
 
 @description('Comma-separated IPv4 CIDRs allowed to reach the app. Empty = open to the internet.')
 param allowedIpRanges string = ''
@@ -98,6 +102,7 @@ module resources 'resources.bicep' = {
     entraAudience: entraAudience
     adminOids: adminOids
     bingConnectionId: bingConnectionId
+    redactionCustomerNames: redactionCustomerNames
     allowedIpRanges: allowedIpRanges
     chatModelName: chatModelName
     chatModelVersion: chatModelVersion

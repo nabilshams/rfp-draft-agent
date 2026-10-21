@@ -16,9 +16,13 @@ from pathlib import Path
 
 import yaml
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "redaction_policy.yml"
+_CUSTOMER_RULE_NAME = "customer_name"
+_MIN_CUSTOMER_NAME_LENGTH = 2  # a one-letter "name" would redact half of every document
 
 
 @dataclass
@@ -42,11 +46,19 @@ class RedactionResult:
 class RedactionEngine:
     """Configurable, auditable redaction engine."""
 
-    def __init__(self, policy_path: str | Path | None = None, customer_allowlist: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        policy_path: str | Path | None = None,
+        customer_allowlist: list[str] | None = None,
+        customer_names: list[str] | None = None,
+    ) -> None:
         policy_path = Path(policy_path) if policy_path else _DEFAULT_POLICY_PATH
         self.rules: list[RedactionRule] = []
         self.customer_allowlist: set[str] = set(customer_allowlist or [])
+        self.customer_names: list[str] = []
         self._load_policy(policy_path)
+        self.customer_names.extend(customer_names or [])
+        self._rebuild_customer_rule()
 
     # ── public API ────────────────────────────────────────
 
@@ -111,7 +123,8 @@ class RedactionEngine:
 
         for entry in policy.get("rules", []):
             try:
-                compiled = re.compile(entry["pattern"], re.IGNORECASE)
+                flags = re.IGNORECASE if entry.get("ignore_case", True) else 0
+                compiled = re.compile(entry["pattern"], flags)
                 self.rules.append(
                     RedactionRule(
                         name=entry["name"],
@@ -126,8 +139,33 @@ class RedactionEngine:
         allowlist = policy.get("customer_allowlist", [])
         if allowlist:
             self.customer_allowlist.update(allowlist)
+        self.customer_names.extend(policy.get("customer_names") or [])
 
         logger.info("Loaded %d redaction rules from %s", len(self.rules), path)
+
+    def _rebuild_customer_rule(self) -> None:
+        """(Re)build the customer-name rule from the protected names minus the allow-list.
+
+        Names are matched case-insensitively as whole words. Names are never logged, only their count.
+        """
+        self.rules = [r for r in self.rules if r.name != _CUSTOMER_RULE_NAME]
+        allowed = {n.lower() for n in self.customer_allowlist}
+        names = {n.strip() for n in self.customer_names if n and n.strip()}
+        too_short = {n for n in names if len(n) < _MIN_CUSTOMER_NAME_LENGTH}
+        if too_short:
+            logger.warning("Ignoring %d customer name(s) shorter than %d characters", len(too_short), _MIN_CUSTOMER_NAME_LENGTH)
+        active = sorted((n for n in names - too_short if n.lower() not in allowed), key=len, reverse=True)
+        if not active:
+            return
+        alternatives = "|".join(re.escape(n) for n in active)
+        self.rules.append(
+            RedactionRule(
+                name=_CUSTOMER_RULE_NAME,
+                pattern=re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE),
+                replacement="[REDACTED-CUSTOMER]",
+            )
+        )
+        logger.info("Protecting %d customer name(s)", len(active))
 
 
 # Module-level singleton (lazy)
@@ -137,5 +175,7 @@ _engine: RedactionEngine | None = None
 def get_redaction_engine() -> RedactionEngine:
     global _engine
     if _engine is None:
-        _engine = RedactionEngine()
+        # Customer names come from the environment (not the policy file) so they never have to be committed.
+        names = [n.strip() for n in get_settings().redaction_customer_names.split(";") if n.strip()]
+        _engine = RedactionEngine(customer_names=names)
     return _engine

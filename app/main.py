@@ -41,6 +41,8 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agents.normalize import normalize_section
+from app.agents.untrusted import fence
 from app.auth.access import (
     OWNER_KEY,
     KbAcl,
@@ -56,7 +58,8 @@ from app.auth.access import (
 from app.auth.entra import UserClaims, authenticate, get_current_user, log_auth_mode
 from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
-from app.validation import OUTPUT_FILENAMES, Filename, KbBlobName, RfpId, Segment, check_filename
+from app.ingestion.pipeline import RedactedRecords, RedactedText, extract_requirements, redacted_document_text
+from app.validation import OUTPUT_FILENAMES, Filename, KbBlobName, RfpId, Segment, Tone, check_filename
 
 logger = logging.getLogger(__name__)
 
@@ -243,17 +246,28 @@ class DraftRequest(BaseModel):
     client_id: Segment
     project_id: Segment
     solution_area: Segment | None = None
-    tone: str = "professional"
+    tone: Tone = "professional"
     approach: str = "per_requirement"  # "per_requirement" or "per_section" or "map_reduce"
-    context: str = ""  # common context applied to every requirement
-    requirements: list[dict[str, Any]] = Field(default_factory=list)
+    context: RedactedText = ""  # common context applied to every requirement
+    # Client-supplied requirements are redacted on arrival: they reach the model like any other input.
+    requirements: RedactedRecords = Field(default_factory=list)
+    # Web grounding sends the search query outside the Azure compliance boundary, so it is off unless asked for.
+    allow_web_search: bool = False
 
 
 class AnswerRequest(BaseModel):
-    question: str
+    question: RedactedText
     client_id: Segment
     project_id: Segment
     solution_area: Segment | None = None
+    allow_web_search: bool = False
+
+
+def _web_search_choice(requested: bool, settings: Settings) -> bool:
+    """Whether to attach web grounding; asking for it when it isn't configured is a client error."""
+    if requested and not settings.bing_connection_id:
+        raise HTTPException(status_code=400, detail="Web search is not configured on this deployment.")
+    return requested
 
 
 class IngestRequest(BaseModel):
@@ -267,13 +281,13 @@ class IngestRequest(BaseModel):
 
 class GenerateDocRequest(BaseModel):
     rfp_id: RfpId
-    responses: list[dict[str, Any]]
-    section_narratives: list[dict[str, Any]] = []
+    responses: RedactedRecords
+    section_narratives: RedactedRecords = []
     approach: str = "per_requirement"
     client_id: Segment = "demo-client"
     project_id: Segment = "demo-project"
     solution_area: Segment = "general"
-    tone: str = "professional"
+    tone: Tone = "professional"
 
 
 # ── Upload helpers ───────────────────────────────────────
@@ -347,7 +361,8 @@ def _require_kb_manage(acl: KbAcl | None, blob_name: str, user: UserClaims, sett
 
 @app.get("/health", tags=["ops"])
 async def health():
-    return {"status": "healthy", "service": "rfp-draft-agent"}
+    # web_search_available lets the UI show the opt-in only when Bing grounding is configured
+    return {"status": "healthy", "service": "rfp-draft-agent", "web_search_available": bool(get_settings().bing_connection_id)}
 
 
 @app.get("/metrics", tags=["ops"])
@@ -406,8 +421,6 @@ def rfp_extract(
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
-    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
-
     blob_name = f"{req.rfp_id}/{req.filename}"
     blob_service = BlobServiceClient(
         account_url=settings.azure_storage_account_url,
@@ -421,22 +434,7 @@ def rfp_extract(
     except Exception:
         raise HTTPException(status_code=404, detail=f"RFP blob not found: {blob_name}")
 
-    # Pre-extraction redaction
-    from app.ingestion.redaction import get_redaction_engine
-    engine = get_redaction_engine()
-
-    # Use spreadsheet-aware extraction for xlsx/csv
-    lower_name = req.filename.lower()
-    if lower_name.endswith((".xlsx", ".xls", ".csv")):
-        result = extract_requirements_from_spreadsheet(req.filename, data)
-        # Redact requirement texts
-        for r in result.requirements:
-            r.text = engine.redact(r.text).sanitized_text
-    else:
-        raw_text = extract_text(req.filename, data)
-        redaction_result = engine.redact(raw_text)
-        sanitized_text = redaction_result.sanitized_text
-        result = extract_rfp_structure(sanitized_text)
+    result = extract_requirements(req.filename, data)
     _bump("extractions")
 
     return result.model_dump()
@@ -456,14 +454,7 @@ def rfp_extract_ai(
     from azure.storage.blob import BlobServiceClient
 
     from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, run_agent_prompt
-    from app.ingestion.redaction import get_redaction_engine
-    from app.ingestion.rfp_extract import (
-        Requirement,
-        RFPExtractionResult,
-        _extract_text_from_csv,
-        _extract_text_from_excel,
-        extract_text,
-    )
+    from app.ingestion.rfp_extract import Requirement, RFPExtractionResult
 
     blob_name = f"{req.rfp_id}/{req.filename}"
     blob_service = BlobServiceClient(
@@ -478,21 +469,8 @@ def rfp_extract_ai(
     except Exception:
         raise HTTPException(status_code=404, detail=f"RFP blob not found: {blob_name}")
 
-    # Extract raw text from the document
-    lower_name = req.filename.lower()
-    if lower_name.endswith((".xlsx", ".xls")):
-        raw_text = _extract_text_from_excel(data)
-    elif lower_name.endswith(".csv"):
-        raw_text = _extract_text_from_csv(data)
-    else:
-        raw_text = extract_text(req.filename, data)
-
-    # Redact before sending to AI
-    engine = get_redaction_engine()
-    sanitized = engine.redact(raw_text).sanitized_text
-
-    # Truncate to fit in context window
-    doc_text = sanitized[:12000]
+    # Redacted before it is sent to the model; truncated to fit the context window
+    doc_text = redacted_document_text(req.filename, data)[:12000]
 
     # Use the agent to extract requirements
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
@@ -512,7 +490,7 @@ def rfp_extract_ai(
             f"- \"evaluation_criteria\": array of strings\n\n"
             f"Extract EVERY requirement — look for shall/must/should statements, "
             f"numbered items, capability descriptions, compliance needs, and explicit questions.\n\n"
-            f"Document content:\n\n{doc_text}"
+            f"Document content:\n\n{fence('RFP-DOCUMENT', doc_text)}"
         ),
     )
 
@@ -588,25 +566,12 @@ def draft(
     data = rfp_container.download_blob(blob_name).readall()
     filename = blob_name.rsplit("/", 1)[-1]
 
-    from app.ingestion.redaction import get_redaction_engine
-    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
-
     requirements: list[dict[str, Any]]
     if req.requirements:
         # Preserve IDs from the extraction shown in the UI so streamed updates map correctly.
         requirements = req.requirements
     else:
-        engine = get_redaction_engine()
-        lower_name = filename.lower()
-        if lower_name.endswith((".xlsx", ".xls", ".csv")):
-            extraction = extract_requirements_from_spreadsheet(filename, data)
-            for r in extraction.requirements:
-                r.text = engine.redact(r.text).sanitized_text
-        else:
-            raw_text = extract_text(filename, data)
-            sanitized = engine.redact(raw_text).sanitized_text
-            extraction = extract_rfp_structure(sanitized)
-        requirements = [r.model_dump() for r in extraction.requirements]
+        requirements = [r.model_dump() for r in extract_requirements(filename, data).requirements]
 
     requirements_json = json.dumps(requirements, indent=2)
 
@@ -621,6 +586,7 @@ def draft(
         tone=req.tone,
         user_oid=user.oid,
         user_groups=user.groups,
+        allow_web_search=_web_search_choice(req.allow_web_search, settings),
     )
     elapsed = time.time() - start
     logger.info("Draft generation took %.1fs for RFP %s", elapsed, req.rfp_id)
@@ -681,8 +647,6 @@ def draft_stream(
     from azure.storage.blob import BlobServiceClient
 
     from app.agents.foundry_agent import stream_map_reduce, stream_per_requirement, stream_per_section
-    from app.ingestion.redaction import get_redaction_engine
-    from app.ingestion.rfp_extract import extract_requirements_from_spreadsheet, extract_rfp_structure, extract_text
     from app.outputs.docx_writer import parse_template_sections
 
     blob_service = BlobServiceClient(
@@ -698,18 +662,9 @@ def draft_stream(
         # Use IDs from Step 2 extraction so UI cards update in real time.
         requirements = req.requirements
     else:
-        engine = get_redaction_engine()
-        lower_name = filename.lower()
-        if lower_name.endswith((".xlsx", ".xls", ".csv")):
-            extraction = extract_requirements_from_spreadsheet(filename, data)
-            for r in extraction.requirements:
-                r.text = engine.redact(r.text).sanitized_text
-        else:
-            raw_text = extract_text(filename, data)
-            sanitized = engine.redact(raw_text).sanitized_text
-            extraction = extract_rfp_structure(sanitized)
-        requirements = [r.model_dump() for r in extraction.requirements]
+        requirements = [r.model_dump() for r in extract_requirements(filename, data).requirements]
     approach = req.approach  # "per_requirement" or "per_section"
+    allow_web_search = _web_search_choice(req.allow_web_search, settings)
 
     def event_generator():
         yield f"data: {json.dumps({'type': 'start', 'total': len(requirements), 'approach': approach})}\n\n"
@@ -731,6 +686,7 @@ def draft_stream(
                     user_oid=user.oid,
                     user_groups=user.groups,
                     user_context=req.context,
+                    allow_web_search=allow_web_search,
                 ):
                     event_type = event.get("type")
                     if event_type == "phase":
@@ -780,6 +736,7 @@ def draft_stream(
                     user_oid=user.oid,
                     user_groups=user.groups,
                     user_context=req.context,
+                    allow_web_search=allow_web_search,
                 ):
                     event_type = event.get("type")
                     if event_type == "section_map":
@@ -828,6 +785,7 @@ def draft_stream(
                     user_oid=user.oid,
                     user_groups=user.groups,
                     user_context=req.context,
+                    allow_web_search=allow_web_search,
                 ):
                     logger.info("[RFP-TRACE] SSE response(per_requirement) requirement_id=%s", resp.get("requirement_id"))
                     all_responses.append(resp)
@@ -873,9 +831,9 @@ def draft_stream(
 
 class GenerateSectionRequest(BaseModel):
     section_name: str
-    prompt: str
-    responses: list[dict[str, Any]] = []
-    tone: str = "professional"
+    prompt: RedactedText
+    responses: RedactedRecords = []
+    tone: Tone = "professional"
 
 
 @app.post("/draft/generate-section", tags=["agent"], dependencies=[Depends(rate_limited)])
@@ -884,7 +842,13 @@ def generate_section(
     user: UserClaims = Depends(get_current_user),
 ):
     """Generate content for a single template section using the provided prompt and responses."""
-    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _post_generation_guard, run_agent_prompt
+    from app.agents.foundry_agent import (
+        _DRAFT_AGENT_NAME,
+        _ensure_agent,
+        _post_generation_guard,
+        _strip_code_fence,
+        run_agent_prompt,
+    )
 
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
 
@@ -892,16 +856,19 @@ def generate_section(
     responses_context = ""
     if req.responses:
         responses_context = "\n\n--- Requirement Responses (use these as source material) ---\n\n"
-        responses_context += "\n\n".join(
-            f"### [{r.get('requirement_id', '?')}] (Compliance: {r.get('meets', '?')})\n"
-            f"Requirement: {r.get('requirement_text', '')[:200]}\n"
-            f"Response: {r.get('answer_markdown', '')}"
-            for r in req.responses
+        responses_context += fence(
+            "RESPONSES",
+            "\n\n".join(
+                f"### [{r.get('requirement_id', '?')}] (Compliance: {r.get('meets', '?')})\n"
+                f"Requirement: {r.get('requirement_text', '')[:200]}\n"
+                f"Response: {r.get('answer_markdown', '')}"
+                for r in req.responses
+            ),
         )
 
     full_prompt = req.prompt + responses_context + (
         f"\n\nReturn ONLY a JSON object:\n"
-        f"{{\"section_name\": \"{req.section_name}\", "
+        f"{{\"section_name\": {json.dumps(req.section_name)}, "
         f"\"narrative_markdown\": \"<your section text>\"}}"
     )
 
@@ -913,13 +880,11 @@ def generate_section(
     safe, _ = _post_generation_guard(agent_result.text)
 
     try:
-        text = safe
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0]
-        result = json.loads(text.strip())
-    except (json.JSONDecodeError, IndexError):
+        parsed = json.loads(_strip_code_fence(safe))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        result = normalize_section(parsed, section_name=req.section_name)
+    except (ValueError, IndexError):
         result = {"section_name": req.section_name, "narrative_markdown": safe}
 
     return result
@@ -942,7 +907,13 @@ def generate_doc(
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
-    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _post_generation_guard, run_agent_prompt
+    from app.agents.foundry_agent import (
+        _DRAFT_AGENT_NAME,
+        _ensure_agent,
+        _generate_section_narrative_from_answers,
+        _parse_section_map,
+        run_agent_prompt,
+    )
     from app.outputs.docx_writer import generate_docx, parse_template_sections
     from app.outputs.xlsx_writer import generate_xlsx
 
@@ -977,9 +948,12 @@ def generate_doc(
         }
     else:
         # Step 1: Classify responses into sections
-        req_summaries = "\n".join(
-            f"- {r.get('requirement_id', '?')}: {r.get('requirement_text', r.get('answer_markdown', ''))[:100]}"
-            for r in responses
+        req_summaries = fence(
+            "REQUIREMENTS",
+            "\n".join(
+                f"- {r.get('requirement_id', '?')}: {r.get('requirement_text', r.get('answer_markdown', ''))[:100]}"
+                for r in responses
+            ),
         )
 
         classify_result = run_agent_prompt(
@@ -994,15 +968,9 @@ def generate_doc(
         )
 
         if classify_result.completed:
-            try:
-                text = classify_result.text
-                if "```json" in text:
-                    text = text.split("```json", 1)[1].split("```", 1)[0]
-                elif "```" in text:
-                    text = text.split("```", 1)[1].split("```", 1)[0]
-                section_map = json.loads(text.strip())
-            except Exception:
-                pass
+            section_map = _parse_section_map(
+                classify_result.text, section_names, [r.get("requirement_id", "?") for r in responses]
+            )
 
         if not section_map:
             section_map = {section_names[0]: [r.get("requirement_id", "?") for r in responses]}
@@ -1015,41 +983,15 @@ def generate_doc(
             if not section_answers:
                 continue
 
-            answers_digest = "\n\n".join(
-                f"### [{a.get('requirement_id', '?')}] (Compliance: {a.get('meets', '?')})\n"
-                f"Requirement: {a.get('requirement_text', '')[:200]}\n"
-                f"Response: {a.get('answer_markdown', '')}"
-                for a in section_answers
+            sections_result.append(
+                _generate_section_narrative_from_answers(
+                    section_name=section_name,
+                    req_ids=req_ids,
+                    section_answers=section_answers,
+                    tone=req.tone,
+                    agent_id=agent_id,
+                )
             )
-
-            narrative_result = run_agent_prompt(
-                agent_id,
-                (
-                    f"Write the \"{section_name}\" section of a professional RFP response.\n"
-                    f"Tone: {req.tone}.\n\n"
-                    f"Synthesize these individual answers into a coherent narrative. "
-                    f"Reference requirement IDs in brackets, e.g. [F1].\n"
-                    f"Keep all factual claims from the answers. Do not add new information.\n\n"
-                    f"--- Answers ---\n\n{answers_digest}\n\n"
-                    f"Return ONLY a JSON object:\n"
-                    f"{{\"section_name\": \"{section_name}\", "
-                    f"\"narrative_markdown\": \"<text>\", "
-                    f"\"requirement_ids\": {json.dumps(req_ids)}}}"
-                ),
-            )
-
-            if narrative_result.completed:
-                safe, _ = _post_generation_guard(narrative_result.text)
-                try:
-                    text = safe
-                    if "```json" in text:
-                        text = text.split("```json", 1)[1].split("```", 1)[0]
-                    elif "```" in text:
-                        text = text.split("```", 1)[1].split("```", 1)[0]
-                    section_data = json.loads(text.strip())
-                except Exception:
-                    section_data = {"section_name": section_name, "narrative_markdown": safe, "requirement_ids": req_ids}
-                sections_result.append(section_data)
 
     # Generate DOCX + XLSX
     draft_result = {
@@ -1102,22 +1044,20 @@ def generate_doc(
 def answer(
     req: AnswerRequest,
     user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ):
     """Answer a single question using the grounded agent."""
     from app.agents.foundry_agent import run_single_answer
-    from app.ingestion.redaction import get_redaction_engine
 
-    # Pre-redact the question
-    engine = get_redaction_engine()
-    redacted_q = engine.redact(req.question)
-
+    # req.question was redacted when the request was validated
     result = run_single_answer(
-        question=redacted_q.sanitized_text,
+        question=req.question,
         client_id=req.client_id,
         project_id=req.project_id,
         solution_area=req.solution_area,
         user_oid=user.oid,
         user_groups=user.groups,
+        allow_web_search=_web_search_choice(req.allow_web_search, settings),
     )
 
     _bump("answers")

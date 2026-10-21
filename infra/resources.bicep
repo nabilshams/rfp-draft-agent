@@ -20,6 +20,8 @@ param entraClientSecret string
 param entraAudience string
 param adminOids string
 param bingConnectionId string
+@secure()
+param redactionCustomerNames string
 param allowedIpRanges string
 param chatModelName string
 param chatModelVersion string
@@ -287,6 +289,11 @@ var jwtEnv = authMode == 'jwt' ? concat([
 var bingEnv = empty(bingConnectionId) ? [] : [{ name: 'BING_CONNECTION_ID', value: bingConnectionId }]
 var adminEnv = empty(adminOids) ? [] : [{ name: 'ADMIN_OIDS', value: adminOids }]
 
+// Customer names are business-sensitive, so they travel as a secret rather than a plain env value.
+var customerNamesSecretName = 'redaction-customer-names'
+var customerNamesSecrets = empty(redactionCustomerNames) ? [] : [{ name: customerNamesSecretName, value: redactionCustomerNames }]
+var customerNamesEnv = empty(redactionCustomerNames) ? [] : [{ name: 'REDACTION_CUSTOMER_NAMES', secretRef: customerNamesSecretName }]
+
 var easyAuthSecretName = 'microsoft-provider-authentication-secret'
 var authSecrets = authMode == 'easyauth' ? [{ name: easyAuthSecretName, value: entraClientSecret }] : []
 
@@ -329,7 +336,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'appinsights-connection-string'
           value: appInsights.properties.ConnectionString
         }
-      ], authSecrets)
+      ], authSecrets, customerNamesSecrets)
     }
     template: {
       containers: [
@@ -340,7 +347,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          env: concat(baseEnv, jwtEnv, bingEnv, adminEnv)
+          env: concat(baseEnv, jwtEnv, bingEnv, adminEnv, customerNamesEnv)
           probes: [
             {
               type: 'Startup'

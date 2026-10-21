@@ -47,7 +47,7 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 | **Grounded Drafting** | Azure AI Foundry Agent with AzureAISearchTool; hybrid (vector+semantic) retrieval; citations required |
 | **Compliance Matrix** | XLSX with data validation (Yes/Partial/No); evidence + source URLs |
 | **DOCX Output** | Template-based with placeholder replacement + appended structured content |
-| **Redaction** | Configurable YAML policy; regex-based removal of pricing, PII, banking info; pre-gen + post-gen scans |
+| **Redaction** | Configurable YAML policy; regex rules for pricing, PII and banking info plus a maintained customer-name list; applied to uploads, requests, retrieved chunks and output |
 | **DLAC** | OData filters enforce `oids/groups` membership + `client_id/project_id/solution_area` segmentation |
 | **Auth** | Three modes via `AUTH_MODE`: `disabled` (local/demo), `easyauth` (Container Apps built-in sign-in), `jwt` (validates Entra bearer tokens); extracts `oid` + `groups` |
 | **Observability** | OpenTelemetry + Application Insights; spans for tool calls, redaction events, token usage |
@@ -234,6 +234,8 @@ curl -X POST http://localhost:8000/answer \
   }'
 ```
 
+Add `"allow_web_search": true` to let this one request use Bing grounding (see [Web search](#web-search-bing-grounding)).
+
 ### `POST /kb/upload`
 Upload a reference document (PDF/DOCX), store it and index it. The document is **private to you** unless you
 share it with groups you belong to.
@@ -316,7 +318,8 @@ in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `M
 | `AUTH_MODE` | `disabled` | `disabled` = no authentication (demo only). `easyauth` = users sign in with Entra ID through Container Apps built-in authentication; see [Authentication](#authentication). `jwt` = the app validates bearer tokens (needs `ENTRA_CLIENT_ID`; `ENTRA_TENANT_ID` defaults to your tenant). |
 | `ALLOWED_IP_RANGES` | _(empty = open)_ | Comma-separated CIDRs allowed to reach the app, e.g. `203.0.113.4/32,198.51.100.0/24`. |
 | `ADMIN_OIDS` | _(empty)_ | Object IDs of administrators who can manage every RFP and KB document. `scripts/setup_auth.py` sets it to the signed-in user. See [Access model](#access-model). |
-| `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When empty, agents are created without Bing grounding. |
+| `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When set, users can opt in to web search per request; see [Web search](#web-search-bing-grounding) for the data-flow caveat. When empty, web search is unavailable. |
+| `REDACTION_CUSTOMER_NAMES` | _(empty)_ | Semicolon-separated customer names to redact everywhere, e.g. `Contoso Ltd;Fabrikam`. Stored as a Container Apps secret. See [Redaction guardrails](#redaction-guardrails). |
 
 > **Security:** with the default `AUTH_MODE=disabled` the deployed app has **no authentication** and is
 > reachable from the internet; the app logs a warning at startup. Turn on [authentication](#authentication)
@@ -390,7 +393,7 @@ computed in one batched call. Section narratives reuse the documents retrieved f
   source matched (it must not cite or invent one), and the UI shows a warning on that requirement.
 
 **Citations are checked.** A model may only cite sources it was given: the retrieved KB documents, plus URLs
-returned by Bing grounding when it is enabled. After every generation (full draft, per-requirement answers,
+returned by Bing grounding when it is used for that request. After every generation (full draft, per-requirement answers,
 section narratives and `/answer`) markdown links to any other URL are reduced to plain text and `evidence`
 entries that cite any other URL are dropped. URLs are compared ignoring a trailing slash and percent-encoding.
 
@@ -453,15 +456,56 @@ AND (oids/any(o: o eq '{user_oid}') OR groups/any(g: search.in(g, '{group_ids}')
 
 This ensures users can only retrieve documents they are authorized to see.
 
-### Redaction Guardrails
+### Redaction guardrails
+
+Redaction (rules in [config/redaction_policy.yml](config/redaction_policy.yml)) masks pricing, emails, phone
+numbers, national IDs, IBANs, card and routing numbers, street addresses and **customer names**. Every path
+into a model goes through one module, `app/ingestion/pipeline.py`:
 
 | Stage | Action |
 |---|---|
-| **Ingestion** | Regex-based redaction of pricing, PII, banking info before indexing |
-| **Pre-generation** | User input and retrieved snippets are scanned and redacted |
-| **Post-generation** | Agent output is scanned; if sensitive patterns found, output is redacted and flagged for human review |
+| **Ingestion** | KB documents are redacted before they are chunked and indexed |
+| **Retrieval** | Retrieved chunks are redacted again, so a rule or customer name added after a document was indexed still applies to it (URLs are left exact so citations still verify) |
+| **RFP files** | Requirements extracted from an uploaded RFP (DOCX/PDF text, spreadsheet rows, AI extraction input) are redacted |
+| **Request bodies** | `question`, `context`, `prompt`, `requirements`, `responses` and `section_narratives` are redacted when the request is validated, so a client can't bypass redaction by sending its own requirements. Identifier, URL and enum fields are left alone |
+| **Output** | The agent's reply is scanned; matches are redacted and the response is returned (flagged in `_meta.violations_redacted`) |
 
-Configure rules in [config/redaction_policy.yml](config/redaction_policy.yml).
+- **Customer names** are a maintained list, not a pattern: set `REDACTION_CUSTOMER_NAMES` to a
+  semicolon-separated list (`azd env set REDACTION_CUSTOMER_NAMES "Contoso Ltd;Fabrikam"`). It is stored as a
+  Container Apps **secret**, because this repository is public and the list is business-sensitive. Matching is
+  case-insensitive on whole words; names are never written to the logs. Names your own company uses
+  legitimately can be listed under `customer_allowlist` in the policy file.
+- **Known limits.** Regex rules are heuristics: unusual formats are missed and a few non-sensitive strings may
+  be masked. Output that trips the scanner is masked, not withheld; reviewing or blocking it with an agent is
+  a planned follow-up. Redaction is not a substitute for reviewing a draft before it is sent.
+
+### Web search (Bing grounding)
+
+Off by default and **opt-in per request** (`allow_web_search: true` on `/draft`, `/draft/stream` and `/answer`,
+a checkbox in the UI that only appears when a connection is configured). Agents carry no standing Bing tool;
+it is attached to the individual runs that ask for it, and a Bing tool left on an agent by an earlier version
+is removed at startup. Requesting it without `BING_CONNECTION_ID` returns `400`.
+
+Microsoft documents that with Grounding with Bing, customer data (the search query and tool parameters) flows
+to Bing, **outside the Azure compliance boundary** and under different data-processing terms. Don't enable it
+for confidential RFPs without checking that those terms are acceptable. Only the generated search query is
+sent; end-user identity isn't.
+
+### Prompt-injection defences
+
+RFPs, KB documents, user context and questions are third-party text, so they are treated as data:
+
+- Each piece is wrapped in a fence with a random per-request marker (`<<<KB-SOURCE:3fa9…` … `KB-SOURCE:3fa9…>>>`;
+  see `app/agents/untrusted.py`), and the agent instructions say that fenced text is never to be obeyed. Look-alike
+  markers inside the text are defused.
+- Model output is validated rather than trusted (`app/agents/normalize.py`): compliance must be Yes/Partial/No
+  (anything else becomes Partial, never an unearned Yes), lists and evidence are coerced to the documented
+  shape, section classifications may only use real sections and real requirement IDs, and citations are limited
+  to the sources supplied (see [Retrieval and citations](#retrieval-and-citations)).
+- `tone` is restricted to a short phrase of letters, spaces and hyphens.
+
+These reduce the risk; they don't remove it. A model can still be influenced by hostile text, which is why the
+compliance matrix and draft need human review.
 
 ---
 
@@ -480,12 +524,15 @@ rfp-draft-agent/
 │   ├── agents/
 │   │   ├── foundry_agent.py       # Foundry agent orchestration
 │   │   ├── kb_search.py           # Hybrid KB search, query embedding, citation checks
+│   │   ├── normalize.py           # Shape checks on model output
 │   │   ├── prompts.py             # System instructions + JSON schemas
-│   │   └── retrieval.py           # DLAC + segmentation query builder
+│   │   ├── retrieval.py           # DLAC + segmentation query builder
+│   │   └── untrusted.py           # Fences that mark third-party text in prompts
 │   ├── evaluation.py              # Retrieval metrics (hit rate, recall@k, MRR)
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
 │   │   ├── kb_ingest.py           # Blob → chunk → embed → index
+│   │   ├── pipeline.py            # The one redaction path for uploads and request bodies
 │   │   └── redaction.py           # Regex-based redaction engine
 │   ├── outputs/
 │   │   ├── docx_writer.py         # DOCX generation

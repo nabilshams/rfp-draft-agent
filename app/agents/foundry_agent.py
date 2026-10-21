@@ -15,7 +15,6 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,7 +25,9 @@ from azure.identity import DefaultAzureCredential
 
 from app.agents import kb_search
 from app.agents.kb_search import RetrievedContext
+from app.agents.normalize import normalize_answer, normalize_draft, normalize_section
 from app.agents.prompts import AGENT_INSTRUCTIONS
+from app.agents.untrusted import fence
 from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
 
@@ -40,8 +41,21 @@ _current_instructions_hash: str | None = None
 
 _DRAFT_AGENT_NAME = "rfp-draft-agent"
 _QA_AGENT_NAME = "rfp-qa-agent"
-# Full resource ID of the project's Grounding-with-Bing connection. Bing grounding is skipped when unset.
-_BING_CONNECTION_ID = os.environ.get("BING_CONNECTION_ID", "")
+
+
+class WebSearchNotConfigured(ValueError):
+    """Web grounding was requested but no Grounding-with-Bing connection is configured."""
+
+
+def web_search_available() -> bool:
+    return bool(get_settings().bing_connection_id)
+
+
+def _web_search_tools() -> list[Any]:
+    connection_id = get_settings().bing_connection_id
+    if not connection_id:
+        raise WebSearchNotConfigured("Web search is not configured: set BING_CONNECTION_ID.")
+    return BingGroundingTool(connection_id=connection_id).definitions
 
 
 def _get_agents_client() -> AgentsClient:
@@ -84,11 +98,34 @@ def _find_existing_agent(client: AgentsClient, name: str) -> str | None:
     return None
 
 
+def _has_web_tool(agent: Any) -> bool:
+    for tool in getattr(agent, "tools", None) or []:
+        kind = tool.get("type") if isinstance(tool, dict) else getattr(tool, "type", "")
+        if str(kind).startswith("bing"):
+            return True
+    return False
+
+
+def _ensure_no_standing_web_tool(client: AgentsClient, agent_id: str, name: str) -> None:
+    """Web grounding is opt-in per request, so no agent may carry it permanently.
+
+    Agents created by earlier versions had Bing attached; remove it and confirm, because a Bing tool left
+    in place would send query text outside the Azure compliance boundary on every run.
+    """
+    if not _has_web_tool(client.get_agent(agent_id)):
+        return
+    logger.warning("Agent '%s' has a standing Bing tool; removing it (web search is now per-request)", name)
+    client.update_agent(agent_id=agent_id, tools=[])
+    if _has_web_tool(client.get_agent(agent_id)):
+        raise RuntimeError(f"Agent '{name}' still has a Bing grounding tool attached; remove it in the Foundry portal.")
+
+
 def _ensure_agent(name: str) -> str:
     """Get or create a persistent agent by name.
 
     If instructions have changed since the agent was last created/updated,
     the agent is updated in place. If creation fails, raises with a clear error.
+    Agents carry no tools: web grounding is attached to individual runs that ask for it.
 
     Returns the agent ID.
     """
@@ -131,36 +168,21 @@ def _ensure_agent(name: str) -> str:
             except Exception as exc:
                 logger.warning("Could not update agent '%s': %s", name, exc)
 
+        _ensure_no_standing_web_tool(client, existing_id, name)
         agent_id = existing_id
     else:
-        # Create new agent with Bing Grounding tool
         logger.info("No existing agent '%s' found, creating new one...", name)
         try:
-            if not _BING_CONNECTION_ID:
-                raise ValueError("BING_CONNECTION_ID not set; creating agent without Bing grounding")
-            bing_tool = BingGroundingTool(connection_id=_BING_CONNECTION_ID)
             agent = client.create_agent(
                 model=settings.foundry_model_deployment_name,
                 name=name,
                 instructions=AGENT_INSTRUCTIONS,
-                tools=bing_tool.definitions,
             )
-            agent_id = agent.id
-            logger.info("Created persistent agent '%s' → %s (with Bing grounding)", name, agent_id)
         except Exception as exc:
             logger.error("Failed to create agent '%s': %s", name, exc)
-            # Try without Bing tool as fallback
-            try:
-                agent = client.create_agent(
-                    model=settings.foundry_model_deployment_name,
-                    name=name,
-                    instructions=AGENT_INSTRUCTIONS,
-                )
-                agent_id = agent.id
-                logger.info("Created agent '%s' → %s (without Bing, fallback)", name, agent_id)
-            except Exception as exc2:
-                logger.error("Fallback create also failed for '%s': %s", name, exc2)
-                raise RuntimeError(f"Cannot create or find agent '{name}': {exc2}") from exc2
+            raise RuntimeError(f"Cannot create or find agent '{name}': {exc}") from exc
+        agent_id = agent.id
+        logger.info("Created persistent agent '%s' → %s", name, agent_id)
 
     # Cache the ID
     if name == _DRAFT_AGENT_NAME:
@@ -187,7 +209,12 @@ def setup_agents() -> dict[str, str]:
 
 
 def _post_generation_guard(text: str) -> tuple[str, list[dict]]:
-    """Run the redaction engine's output scanner.  Returns (safe_text, violations)."""
+    """Run the redaction engine's output scanner.  Returns (safe_text, violations).
+
+    Violations are redacted and the response is still returned.
+    TODO: hand output that trips the scanner to a reviewing agent that can rewrite or withhold it,
+    instead of only masking the matched spans.
+    """
     engine = get_redaction_engine()
     violations = engine.scan_output(text)
     if violations:
@@ -227,18 +254,20 @@ def _delete_thread(client: AgentsClient, thread_id: str) -> None:
         logger.warning("Could not delete agent thread %s: %s", thread_id, exc)
 
 
-def run_agent_prompt(agent_id: str, content: str) -> AgentRunResult:
+def run_agent_prompt(agent_id: str, content: str, *, web_search: bool = False) -> AgentRunResult:
     """Send *content* to an agent on a new thread, wait for the run, and return its reply.
 
     Blocking: call from a worker thread, not from the event loop. The run is cancelled if
     it exceeds ``RUN_TIMEOUT_SECONDS`` (status ``timed_out``), and the thread is always deleted.
+    ``web_search`` attaches Bing grounding to this run only; it raises WebSearchNotConfigured if unavailable.
     """
+    run_options: dict[str, Any] = {"tools": _web_search_tools()} if web_search else {}
     client = _get_agents_client()
     timeout = get_settings().run_timeout_seconds
     thread = client.threads.create()
     try:
         client.messages.create(thread_id=thread.id, role=MessageRole.USER, content=content)
-        run = client.runs.create(thread_id=thread.id, agent_id=agent_id)
+        run = client.runs.create(thread_id=thread.id, agent_id=agent_id, **run_options)
         logger.info("Started run %s", run.id)
 
         deadline = time.monotonic() + timeout
@@ -284,6 +313,48 @@ def run_agent_prompt(agent_id: str, content: str) -> AgentRunResult:
 # ── Public API ────────────────────────────────────────────────
 
 
+def _strip_code_fence(text: str) -> str:
+    """The JSON inside a ```json fence if the model added one, else the text itself."""
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0]
+    return text.strip()
+
+
+def _parse_section_map(text: str, section_names: list[str], requirement_ids: list[Any]) -> dict[str, list[str]]:
+    """The model's section classification, restricted to real sections and real requirement IDs.
+
+    Anything the model invented (extra sections, unknown IDs, repeats) is dropped; requirements it left
+    out go to the first section so none disappear from the narratives. Empty if the reply is unusable.
+    """
+    try:
+        parsed = json.loads(_strip_code_fence(text))
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    known = {str(i) for i in requirement_ids}
+    seen: set[str] = set()
+    section_map: dict[str, list[str]] = {}
+    for name in section_names:
+        ids = parsed.get(name)
+        if not isinstance(ids, list):
+            continue
+        kept = [str(i) for i in ids if str(i) in known and str(i) not in seen]
+        seen.update(kept)
+        if kept:
+            section_map[name] = kept
+    if not section_map:
+        return {}
+    leftover = [str(i) for i in requirement_ids if str(i) not in seen]
+    if leftover:
+        first = next(iter(section_map))
+        section_map[first] = section_map[first] + leftover
+    return section_map
+
+
 def _parse_requirements(requirements_json: str) -> list[dict[str, Any]]:
     """The requirement dicts in a JSON array, or an empty list if it isn't one."""
     try:
@@ -303,6 +374,7 @@ def run_draft(
     tone: str = "professional",
     user_oid: str,
     user_groups: list[str] | None = None,
+    allow_web_search: bool = False,
 ) -> dict[str, Any]:
     """Create an agent, submit the full RFP, and return the draft JSON."""
 
@@ -343,10 +415,10 @@ def run_draft(
         f"  - \"followups\": array of strings\n\n"
         f"Use the following retrieved sources to ground your answers:\n\n"
         f"{context.block}\n\n"
-        f"Here are the requirements to respond to:\n{requirements_json}"
+        f"Here are the requirements to respond to:\n{fence('REQUIREMENTS', requirements_json)}"
     )
 
-    result = run_agent_prompt(agent_id, user_message)
+    result = run_agent_prompt(agent_id, user_message, web_search=allow_web_search)
 
     if not result.completed:
         logger.error("Agent run failed: %s – %s", result.status, result.last_error)
@@ -364,16 +436,12 @@ def run_draft(
     # Only sources that were retrieved for this draft (or returned by web grounding) may be cited.
     allowed_urls = context.urls | result.annotation_urls
 
-    # Parse JSON from the agent's response
     try:
-        # The agent may wrap JSON in ```json ... ```
-        json_str = safe_text
-        if "```json" in json_str:
-            json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        draft = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
-    except (json.JSONDecodeError, IndexError):
+        parsed = json.loads(_strip_code_fence(safe_text))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        draft = kb_search.sanitize_citations(normalize_draft(parsed), allowed_urls)
+    except (ValueError, IndexError):
         draft = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
 
     for response in draft.get("responses", []) if isinstance(draft, dict) else []:
@@ -397,6 +465,7 @@ def _answer_single_requirement(
     tone: str,
     agent_id: str,
     user_context: str = "",
+    allow_web_search: bool = False,
 ) -> dict[str, Any]:
     """Process a single requirement through the agent and return structured response."""
     req_id = requirement.get("id", "?")
@@ -404,7 +473,15 @@ def _answer_single_requirement(
 
     context_preamble = ""
     if user_context:
-        context_preamble = f"## Company / Response Context\n{user_context}\n\n"
+        context_preamble = f"## Company / Response Context\n{fence('USER-CONTEXT', user_context)}\n\n"
+
+    requirement_block = fence(
+        "REQUIREMENT",
+        f"Requirement ID: {req_id}\n"
+        f"Category: {requirement.get('category', 'general')}\n"
+        f"Priority: {requirement.get('priority', 'standard')}\n"
+        f"Requirement: {req_text}",
+    )
 
     run_result = run_agent_prompt(
         agent_id,
@@ -412,7 +489,7 @@ def _answer_single_requirement(
             f"Respond to this single RFP requirement. Tone: {tone}.\n\n"
             f"{context_preamble}"
             f"Return ONLY a JSON object (no markdown wrapping) with these fields:\n"
-            f"- \"requirement_id\": \"{req_id}\"\n"
+            f"- \"requirement_id\": {json.dumps(str(req_id))}\n"
             f"- \"requirement_text\": the original requirement text\n"
             f"- \"answer_markdown\": your detailed response (2-4 paragraphs)\n"
             f"- \"meets\": \"Yes\", \"Partial\", or \"No\"\n"
@@ -422,11 +499,9 @@ def _answer_single_requirement(
             f"- \"followups\": array of strings\n\n"
             f"Ground your answer using these sources:\n\n"
             f"{context.block}\n\n"
-            f"Requirement ID: {req_id}\n"
-            f"Category: {requirement.get('category', 'general')}\n"
-            f"Priority: {requirement.get('priority', 'standard')}\n"
-            f"Requirement: {req_text}"
+            f"{requirement_block}"
         ),
+        web_search=allow_web_search,
     )
 
     if not run_result.completed:
@@ -448,16 +523,14 @@ def _answer_single_requirement(
     allowed_urls = context.urls | run_result.annotation_urls
 
     try:
-        json_str = safe_text
-        if "```json" in json_str:
-            json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        answer = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
+        parsed = json.loads(_strip_code_fence(safe_text))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        answer = kb_search.sanitize_citations(normalize_answer(parsed), allowed_urls)
         answer["requirement_id"] = req_id
         answer["kb_evidence_found"] = context.found
         return answer
-    except (json.JSONDecodeError, IndexError):
+    except (ValueError, IndexError):
         return {
             "requirement_id": req_id,
             "requirement_text": req_text,
@@ -482,15 +555,17 @@ def _generate_section_narrative(
 ) -> dict[str, Any]:
     """Generate one section narrative from a list of requirements."""
 
-    req_details = "\n".join(
-        f"- [{r.get('id','?')}] ({r.get('priority','standard')}): {r.get('text','')}"
-        for r in section_reqs
+    req_details = fence(
+        "REQUIREMENTS",
+        "\n".join(
+            f"- [{r.get('id','?')}] ({r.get('priority','standard')}): {r.get('text','')}" for r in section_reqs
+        ),
     )
 
     result = run_agent_prompt(
         agent_id,
         (
-            f"Write the \"{section_name}\" section of an RFP response document. "
+            f"Write the {json.dumps(section_name)} section of an RFP response document. "
             f"Tone: {tone}.\n\n"
             f"This section must address the following requirements:\n{req_details}\n\n"
             f"Write a coherent, professional narrative (not a list of individual answers). "
@@ -498,7 +573,7 @@ def _generate_section_narrative(
             f"Reference requirement IDs in brackets where relevant, e.g. [F1].\n\n"
             f"Use these sources for grounding:\n{context.block}\n\n"
             f"Return ONLY a JSON object:\n"
-            f"{{\"section_name\": \"{section_name}\", "
+            f"{{\"section_name\": {json.dumps(section_name)}, "
             f"\"narrative_markdown\": \"<your section text>\", "
             f"\"requirement_ids\": {json.dumps(req_ids)}}}"
         ),
@@ -514,13 +589,13 @@ def _generate_section_narrative(
     safe, _ = _post_generation_guard(result.text)
     allowed_urls = context.urls | result.annotation_urls
     try:
-        text = safe
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0]
-        section_data = kb_search.sanitize_citations(json.loads(text.strip()), allowed_urls)
-    except Exception:
+        parsed = json.loads(_strip_code_fence(safe))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        section_data = kb_search.sanitize_citations(
+            normalize_section(parsed, section_name=section_name, req_ids=req_ids), allowed_urls
+        )
+    except (ValueError, IndexError):
         section_data = {
             "section_name": section_name,
             "narrative_markdown": kb_search.sanitize_citations(safe, allowed_urls),
@@ -539,17 +614,20 @@ def _generate_section_narrative_from_answers(
 ) -> dict[str, Any]:
     """Generate one section narrative from pre-generated requirement answers."""
 
-    answers_digest = "\n\n".join(
-        f"### [{a.get('requirement_id', '?')}] (Compliance: {a.get('meets', '?')})\n"
-        f"Requirement: {a.get('requirement_text', '')[:200]}\n"
-        f"Response: {a.get('answer_markdown', '')}"
-        for a in section_answers
+    answers_digest = fence(
+        "ANSWERS",
+        "\n\n".join(
+            f"### [{a.get('requirement_id', '?')}] (Compliance: {a.get('meets', '?')})\n"
+            f"Requirement: {a.get('requirement_text', '')[:200]}\n"
+            f"Response: {a.get('answer_markdown', '')}"
+            for a in section_answers
+        ),
     )
 
     result = run_agent_prompt(
         agent_id,
         (
-            f"Write the \"{section_name}\" section of a professional RFP response document.\n"
+            f"Write the {json.dumps(section_name)} section of a professional RFP response document.\n"
             f"Tone: {tone}.\n\n"
             f"Below are the individual requirement responses that belong in this section. "
             f"Your job is to synthesize them into a coherent, flowing narrative — NOT a list of "
@@ -558,7 +636,7 @@ def _generate_section_narrative_from_answers(
             f"Keep all factual claims from the original answers. Do not add new information.\n\n"
             f"--- Answers for this section ---\n\n{answers_digest}\n\n"
             f"Return ONLY a JSON object:\n"
-            f"{{\"section_name\": \"{section_name}\", "
+            f"{{\"section_name\": {json.dumps(section_name)}, "
             f"\"narrative_markdown\": \"<coherent section text>\", "
             f"\"requirement_ids\": {json.dumps(req_ids)}}}"
         ),
@@ -575,13 +653,13 @@ def _generate_section_narrative_from_answers(
     # The answers were already checked; the narrative may cite only what they cite.
     allowed_urls = kb_search.cited_urls(section_answers) | result.annotation_urls
     try:
-        text = safe
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0]
-        section_data = kb_search.sanitize_citations(json.loads(text.strip()), allowed_urls)
-    except Exception:
+        parsed = json.loads(_strip_code_fence(safe))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        section_data = kb_search.sanitize_citations(
+            normalize_section(parsed, section_name=section_name, req_ids=req_ids), allowed_urls
+        )
+    except (ValueError, IndexError):
         section_data = {
             "section_name": section_name,
             "narrative_markdown": kb_search.sanitize_citations(safe, allowed_urls),
@@ -599,6 +677,7 @@ def stream_per_requirement(
     user_oid: str,
     user_groups: list[str] | None = None,
     user_context: str = "",
+    allow_web_search: bool = False,
 ):
     """Approach 1: Process each requirement independently.
 
@@ -627,6 +706,7 @@ def stream_per_requirement(
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
+                allow_web_search=allow_web_search,
             )
             yield result
         except Exception as exc:
@@ -655,6 +735,7 @@ def stream_per_section(
     user_oid: str,
     user_groups: list[str] | None = None,
     user_context: str = "",
+    allow_web_search: bool = False,
 ):
     """Approach 2: Group requirements by template section, generate narratives.
 
@@ -688,8 +769,8 @@ def stream_per_section(
 
     # Step 1: Classify requirements into sections
     logger.info("Step 1: Classifying %d requirements into %d sections", len(requirements), len(section_names))
-    req_summaries = "\n".join(
-        f"- {r.get('id','?')}: {r.get('text','')[:120]}" for r in requirements
+    req_summaries = fence(
+        "REQUIREMENTS", "\n".join(f"- {r.get('id','?')}: {r.get('text','')[:120]}" for r in requirements)
     )
 
     result = run_agent_prompt(
@@ -704,18 +785,11 @@ def stream_per_section(
         ),
     )
 
-    section_map: dict[str, list[str]] = {}
-    if result.completed:
-        try:
-            text = result.text
-            if "```json" in text:
-                text = text.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in text:
-                text = text.split("```", 1)[1].split("```", 1)[0]
-            section_map = json.loads(text.strip())
-        except Exception:
-            pass
-
+    section_map = (
+        _parse_section_map(result.text, section_names, [r.get("id", "?") for r in requirements])
+        if result.completed
+        else {}
+    )
     # Fallback: if classification failed, put all in first section
     if not section_map:
         section_map = {section_names[0]: [r.get("id", "?") for r in requirements]}
@@ -794,6 +868,7 @@ def stream_per_section(
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
+                allow_web_search=allow_web_search,
             )
             # Only keep compliance fields, not full narrative
             yield {
@@ -828,6 +903,7 @@ def stream_map_reduce(
     user_oid: str,
     user_groups: list[str] | None = None,
     user_context: str = "",
+    allow_web_search: bool = False,
 ):
     """Approach 3: Map-Reduce — answer each requirement, then synthesize into sections.
 
@@ -869,6 +945,7 @@ def stream_map_reduce(
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
+                allow_web_search=allow_web_search,
             )
             all_responses.append(result)
             yield {"type": "response", "data": result}
@@ -892,9 +969,12 @@ def stream_map_reduce(
     yield {"type": "phase", "data": {"phase": 2, "description": "Synthesizing answers into template sections"}}
 
     # Step 2a: Classify requirements into sections
-    req_summaries = "\n".join(
-        f"- {r.get('requirement_id', '?')}: {r.get('requirement_text', r.get('text', ''))[:100]}"
-        for r in all_responses
+    req_summaries = fence(
+        "REQUIREMENTS",
+        "\n".join(
+            f"- {r.get('requirement_id', '?')}: {r.get('requirement_text', r.get('text', ''))[:100]}"
+            for r in all_responses
+        ),
     )
 
     result = run_agent_prompt(
@@ -909,18 +989,11 @@ def stream_map_reduce(
         ),
     )
 
-    section_map: dict[str, list[str]] = {}
-    if result.completed:
-        try:
-            text = result.text
-            if "```json" in text:
-                text = text.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in text:
-                text = text.split("```", 1)[1].split("```", 1)[0]
-            section_map = json.loads(text.strip())
-        except Exception:
-            pass
-
+    section_map = (
+        _parse_section_map(result.text, section_names, [r.get("requirement_id", "?") for r in all_responses])
+        if result.completed
+        else {}
+    )
     if not section_map:
         section_map = {section_names[0]: [r.get("requirement_id", "?") for r in all_responses]}
 
@@ -985,6 +1058,7 @@ def run_single_answer(
     solution_area: str | None = None,
     user_oid: str,
     user_groups: list[str] | None = None,
+    allow_web_search: bool = False,
 ) -> dict[str, Any]:
     """Answer a single question using the grounded agent."""
 
@@ -1012,8 +1086,9 @@ def run_single_answer(
             f"Return a JSON object with answer_markdown, evidence, assumptions, "
             f"and followups.\n\n"
             f"{context.block}\n\n"
-            f"Question: {question}"
+            f"Question:\n{fence('QUESTION', question)}"
         ),
+        web_search=allow_web_search,
     )
 
     if not result.completed:
@@ -1023,13 +1098,11 @@ def run_single_answer(
     allowed_urls = context.urls | result.annotation_urls
 
     try:
-        json_str = safe_text
-        if "```json" in json_str:
-            json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-        answer = kb_search.sanitize_citations(json.loads(json_str.strip()), allowed_urls)
-    except (json.JSONDecodeError, IndexError):
+        parsed = json.loads(_strip_code_fence(safe_text))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        answer = kb_search.sanitize_citations(normalize_answer(parsed, require_meets=False), allowed_urls)
+    except (ValueError, IndexError):
         answer = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
     if isinstance(answer, dict):
         answer["kb_evidence_found"] = context.found
