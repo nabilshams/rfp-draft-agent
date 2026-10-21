@@ -49,9 +49,9 @@ line-length = 120
 target-version = "py311"
 
 # Explicit rule set so lint results don't change when Ruff changes its defaults.
-# ASYNC251 (blocking sleep in async code) is intentionally left out until issue #4 is fixed.
+# ASYNC flags blocking calls (e.g. time.sleep, sync SDK I/O) inside async functions.
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "ASYNC"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

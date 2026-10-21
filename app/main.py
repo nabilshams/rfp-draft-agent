@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections import deque
@@ -52,10 +53,35 @@ _counters: dict[str, int] = {
     "answers": 0,
     "redaction_blocks": 0,
 }
+# Handlers run in worker threads, so increments must be serialised.
+_counters_lock = threading.Lock()
+
+
+def _bump(name: str) -> None:
+    with _counters_lock:
+        _counters[name] += 1
+
 
 # ── WebSocket log broadcasting ───────────────────────────
 _ws_clients: set[WebSocket] = set()
 _log_buffer: deque[dict] = deque(maxlen=200)  # keep last 200 log entries
+_main_loop: asyncio.AbstractEventLoop | None = None  # set at startup; log records may come from any thread
+_ws_send_tasks: set[asyncio.Task] = set()  # keep references so in-flight sends aren't garbage collected
+
+
+async def _send_log(ws: WebSocket, entry: dict) -> None:
+    try:
+        await ws.send_json(entry)
+    except Exception:
+        _ws_clients.discard(ws)
+
+
+def _broadcast(entry: dict) -> None:
+    """Runs on the event loop: start a send to every connected client."""
+    for ws in list(_ws_clients):
+        task = asyncio.get_running_loop().create_task(_send_log(ws, entry))
+        _ws_send_tasks.add(task)
+        task.add_done_callback(_ws_send_tasks.discard)
 
 
 class WebSocketLogHandler(logging.Handler):
@@ -70,14 +96,13 @@ class WebSocketLogHandler(logging.Handler):
         }
         _log_buffer.append(entry)
 
-        # Fire-and-forget broadcast to all connected clients
-        dead: set[WebSocket] = set()
-        for ws in _ws_clients.copy():
-            try:
-                asyncio.get_event_loop().create_task(ws.send_json(entry))
-            except Exception:
-                dead.add(ws)
-        _ws_clients.difference_update(dead)
+        loop = _main_loop
+        if loop is None or loop.is_closed() or not _ws_clients:
+            return
+        try:
+            loop.call_soon_threadsafe(_broadcast, entry)
+        except RuntimeError:
+            pass  # loop is shutting down
 
 
 def _install_ws_log_handler() -> None:
@@ -95,8 +120,10 @@ def _install_ws_log_handler() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
+    global _main_loop
     from app.telemetry.tracing import configure_tracing
 
+    _main_loop = asyncio.get_running_loop()
     _install_ws_log_handler()
     configure_tracing(app)
 
@@ -110,6 +137,7 @@ async def lifespan(app: FastAPI):
     logger.info("RFP Draft Agent started")
     yield
     logger.info("RFP Draft Agent shutting down")
+    _main_loop = None
 
 
 app = FastAPI(
@@ -223,7 +251,7 @@ async def metrics():
 
 
 @app.post("/rfp/upload", tags=["rfp"])
-async def rfp_upload(
+def rfp_upload(
     file: UploadFile = File(...),
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -248,10 +276,10 @@ async def rfp_upload(
     )
     container = blob_service.get_container_client(settings.storage_rfp_container)
 
-    data = await file.read()
+    data = file.file.read()
     container.upload_blob(name=blob_name, data=data, overwrite=True)
 
-    _counters["rfp_uploads"] += 1
+    _bump("rfp_uploads")
     logger.info("Uploaded RFP %s (%d bytes) by user %s", blob_name, len(data), user.oid)
 
     return {
@@ -266,7 +294,7 @@ async def rfp_upload(
 
 
 @app.post("/rfp/extract", tags=["rfp"])
-async def rfp_extract(
+def rfp_extract(
     req: ExtractRequest,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -305,7 +333,7 @@ async def rfp_extract(
         redaction_result = engine.redact(raw_text)
         sanitized_text = redaction_result.sanitized_text
         result = extract_rfp_structure(sanitized_text)
-    _counters["extractions"] += 1
+    _bump("extractions")
 
     return result.model_dump()
 
@@ -314,17 +342,16 @@ async def rfp_extract(
 
 
 @app.post("/rfp/extract-ai", tags=["rfp"])
-async def rfp_extract_ai(
+def rfp_extract_ai(
     req: ExtractRequest,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
     """Extract requirements using AI agent — better for unstructured documents."""
-    from azure.ai.agents.models import MessageRole
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
-    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, run_agent_prompt
     from app.ingestion.redaction import get_redaction_engine
     from app.ingestion.rfp_extract import (
         Requirement,
@@ -363,14 +390,11 @@ async def rfp_extract_ai(
     doc_text = sanitized[:12000]
 
     # Use the agent to extract requirements
-    agents_client = _get_agents_client()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    agent_result = run_agent_prompt(
+        agent_id,
+        (
             f"Extract ALL requirements, questions, and evaluation criteria from this RFP document.\n\n"
             f"Return ONLY a JSON object with:\n"
             f"- \"requirements\": array of objects, each with:\n"
@@ -387,23 +411,11 @@ async def rfp_extract_ai(
         ),
     )
 
-    import time as _time
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        _time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-    if run.status != "completed":
-        raise HTTPException(status_code=502, detail=f"AI extraction failed: {run.status}")
+    if not agent_result.completed:
+        raise HTTPException(status_code=502, detail=f"AI extraction failed: {agent_result.status}")
 
     # Parse the response
-    messages = agents_client.messages.list(thread_id=thread.id)
-    raw_response = ""
-    for msg in messages:
-        if msg.role == MessageRole.AGENT:
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    raw_response += block.text.value
+    raw_response = agent_result.text
 
     try:
         json_str = raw_response
@@ -434,7 +446,7 @@ async def rfp_extract_ai(
         evaluation_criteria=parsed.get("evaluation_criteria", []),
     )
 
-    _counters["extractions"] += 1
+    _bump("extractions")
     return result.model_dump()
 
 
@@ -442,7 +454,7 @@ async def rfp_extract_ai(
 
 
 @app.post("/draft", tags=["agent"])
-async def draft(
+def draft(
     req: DraftRequest,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -540,7 +552,7 @@ async def draft(
             detail="Failed to upload generated documents to Azure Blob Storage. Check storage RBAC/credentials.",
         ) from exc
 
-    _counters["drafts"] += 1
+    _bump("drafts")
 
     base_url = f"{settings.azure_storage_account_url}/{settings.storage_output_container}"
     return {
@@ -558,7 +570,7 @@ async def draft(
 
 
 @app.post("/draft/stream", tags=["agent"])
-async def draft_stream(
+def draft_stream(
     req: DraftRequest,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -744,7 +756,7 @@ async def draft_stream(
             output_container.upload_blob(f"{req.rfp_id}/draft.docx", docx_bytes, overwrite=True)
             output_container.upload_blob(f"{req.rfp_id}/compliance.xlsx", xlsx_bytes, overwrite=True)
 
-            _counters["drafts"] += 1
+            _bump("drafts")
             base_url = f"{settings.azure_storage_account_url}/{settings.storage_output_container}"
 
             yield f"data: {json.dumps({'type': 'complete', 'outputs': {'docx_url': f'{base_url}/{req.rfp_id}/draft.docx', 'xlsx_url': f'{base_url}/{req.rfp_id}/compliance.xlsx'}})}\n\n"
@@ -770,16 +782,13 @@ class GenerateSectionRequest(BaseModel):
 
 
 @app.post("/draft/generate-section", tags=["agent"])
-async def generate_section(
+def generate_section(
     req: GenerateSectionRequest,
     user: UserClaims = Depends(get_current_user),
 ):
     """Generate content for a single template section using the provided prompt and responses."""
-    from azure.ai.agents.models import MessageRole
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _post_generation_guard, run_agent_prompt
 
-    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client, _post_generation_guard
-
-    agents_client = _get_agents_client()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
 
     # Build context from responses if available
@@ -799,31 +808,12 @@ async def generate_section(
         f"\"narrative_markdown\": \"<your section text>\"}}"
     )
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=full_prompt,
-    )
+    agent_result = run_agent_prompt(agent_id, full_prompt)
 
-    import time as _time
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        _time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+    if not agent_result.completed:
+        raise HTTPException(status_code=502, detail=f"Section generation failed: {agent_result.status}")
 
-    if run.status != "completed":
-        raise HTTPException(status_code=502, detail=f"Section generation failed: {run.status}")
-
-    messages = agents_client.messages.list(thread_id=thread.id)
-    raw = ""
-    for msg in messages:
-        if msg.role == MessageRole.AGENT:
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    raw += block.text.value
-
-    safe, _ = _post_generation_guard(raw)
+    safe, _ = _post_generation_guard(agent_result.text)
 
     try:
         text = safe
@@ -842,7 +832,7 @@ async def generate_section(
 
 
 @app.post("/draft/generate-doc", tags=["agent"])
-async def generate_doc(
+def generate_doc(
     req: GenerateDocRequest,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -852,11 +842,10 @@ async def generate_doc(
     Uses the template sections to organize responses into coherent narratives,
     then produces DOCX + XLSX outputs.
     """
-    from azure.ai.agents.models import MessageRole
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
-    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _get_agents_client, _post_generation_guard
+    from app.agents.foundry_agent import _DRAFT_AGENT_NAME, _ensure_agent, _post_generation_guard, run_agent_prompt
     from app.outputs.docx_writer import generate_docx, parse_template_sections
     from app.outputs.xlsx_writer import generate_xlsx
 
@@ -870,7 +859,6 @@ async def generate_doc(
         "Compliance & Security", "Implementation & Support",
     ]
 
-    agents_client = _get_agents_client()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
 
     section_map = {}
@@ -891,11 +879,9 @@ async def generate_doc(
             for r in responses
         )
 
-        thread = agents_client.threads.create()
-        agents_client.messages.create(
-            thread_id=thread.id,
-            role=MessageRole.USER,
-            content=(
+        classify_result = run_agent_prompt(
+            agent_id,
+            (
                 f"Classify each requirement into the best document section.\n\n"
                 f"Sections: {json.dumps(section_names)}\n\n"
                 f"Requirements:\n{req_summaries}\n\n"
@@ -904,22 +890,9 @@ async def generate_doc(
             ),
         )
 
-        import time as _time
-        run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-        while run.status in ("queued", "in_progress", "requires_action"):
-            _time.sleep(1)
-            run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-        if run.status == "completed":
-            messages = agents_client.messages.list(thread_id=thread.id)
-            raw = ""
-            for msg in messages:
-                if msg.role == MessageRole.AGENT:
-                    for block in msg.content:
-                        if hasattr(block, "text"):
-                            raw += block.text.value
+        if classify_result.completed:
             try:
-                text = raw
+                text = classify_result.text
                 if "```json" in text:
                     text = text.split("```json", 1)[1].split("```", 1)[0]
                 elif "```" in text:
@@ -946,11 +919,9 @@ async def generate_doc(
                 for a in section_answers
             )
 
-            thread = agents_client.threads.create()
-            agents_client.messages.create(
-                thread_id=thread.id,
-                role=MessageRole.USER,
-                content=(
+            narrative_result = run_agent_prompt(
+                agent_id,
+                (
                     f"Write the \"{section_name}\" section of a professional RFP response.\n"
                     f"Tone: {req.tone}.\n\n"
                     f"Synthesize these individual answers into a coherent narrative. "
@@ -964,20 +935,8 @@ async def generate_doc(
                 ),
             )
 
-            run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-            while run.status in ("queued", "in_progress", "requires_action"):
-                _time.sleep(1)
-                run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-            if run.status == "completed":
-                messages = agents_client.messages.list(thread_id=thread.id)
-                raw = ""
-                for msg in messages:
-                    if msg.role == MessageRole.AGENT:
-                        for block in msg.content:
-                            if hasattr(block, "text"):
-                                raw += block.text.value
-                safe, _ = _post_generation_guard(raw)
+            if narrative_result.completed:
+                safe, _ = _post_generation_guard(narrative_result.text)
                 try:
                     text = safe
                     if "```json" in text:
@@ -1037,7 +996,7 @@ async def generate_doc(
 
 
 @app.post("/answer", tags=["agent"])
-async def answer(
+def answer(
     req: AnswerRequest,
     user: UserClaims = Depends(get_current_user),
 ):
@@ -1058,7 +1017,7 @@ async def answer(
         user_groups=user.groups,
     )
 
-    _counters["answers"] += 1
+    _bump("answers")
     return result
 
 
@@ -1066,7 +1025,7 @@ async def answer(
 
 
 @app.post("/kb/ingest", tags=["knowledge-base"])
-async def kb_ingest(
+def kb_ingest(
     req: IngestRequest,
     user: UserClaims = Depends(get_current_user),
 ):
@@ -1089,7 +1048,7 @@ async def kb_ingest(
 
 
 @app.get("/outputs/{rfp_id}/{filename}", tags=["outputs"])
-async def download_output(
+def download_output(
     rfp_id: str,
     filename: str,
     user: UserClaims = Depends(get_current_user),
@@ -1128,7 +1087,7 @@ async def download_output(
 
 
 @app.post("/kb/upload", tags=["knowledge-base"])
-async def kb_upload(
+def kb_upload(
     file: UploadFile = File(...),
     client_id: str = Form("demo-client"),
     project_id: str = Form("demo-project"),
@@ -1157,7 +1116,7 @@ async def kb_upload(
     )
     container = blob_service.get_container_client(settings.storage_kb_container)
 
-    data = await file.read()
+    data = file.file.read()
     container.upload_blob(name=blob_name, data=data, overwrite=True)
     logger.info("Uploaded KB doc %s (%d bytes)", blob_name, len(data))
 
@@ -1183,7 +1142,7 @@ async def kb_upload(
 
 
 @app.get("/kb/list", tags=["knowledge-base"])
-async def kb_list(
+def kb_list(
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
@@ -1217,7 +1176,7 @@ async def kb_list(
 
 
 @app.delete("/kb/delete", tags=["knowledge-base"])
-async def kb_delete(
+def kb_delete(
     blob_name: str = Query(...),
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
@@ -1284,7 +1243,7 @@ async def kb_delete(
 
 
 @app.post("/kb/reindex", tags=["knowledge-base"])
-async def kb_reindex(
+def kb_reindex(
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
@@ -1328,7 +1287,7 @@ async def kb_reindex(
 
 
 @app.post("/template/upload", tags=["template"])
-async def template_upload(
+def template_upload(
     file: UploadFile = File(...),
     user: UserClaims = Depends(get_current_user),
 ):
@@ -1344,7 +1303,7 @@ async def template_upload(
     template_dir.mkdir(parents=True, exist_ok=True)
     template_path = template_dir / "rfp_response_template.docx"
 
-    data = await file.read()
+    data = file.file.read()
 
     # Validate the file is actually a valid DOCX (ZIP-based)
     format_warning = None
@@ -1379,7 +1338,7 @@ async def template_upload(
 
 
 @app.get("/template/info", tags=["template"])
-async def template_info():
+def template_info():
     """Check whether a custom template is loaded and return its sections."""
     from app.outputs.docx_writer import parse_template_sections
 

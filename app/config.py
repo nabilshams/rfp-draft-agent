@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     )
     parallelism: int = Field(1, alias="PARALLELISM", ge=1)
     section_parallelism: int = Field(1, alias="SECTION_PARALLELISM", ge=1)
+    # Longest a single agent run may take before it is cancelled.
+    run_timeout_seconds: int = Field(600, alias="RUN_TIMEOUT_SECONDS", ge=30)
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     model_config = {

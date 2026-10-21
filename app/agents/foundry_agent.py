@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from azure.ai.agents import AgentsClient
@@ -278,6 +279,87 @@ def _post_generation_guard(text: str) -> tuple[str, list[dict]]:
     return text, []
 
 
+# ── Agent run helper ──────────────────────────────────────────
+
+_ACTIVE_RUN_STATES = ("queued", "in_progress", "requires_action")
+
+
+@dataclass
+class AgentRunResult:
+    """Outcome of one prompt sent to an agent on a throw-away thread."""
+
+    status: str
+    run_id: str = ""
+    text: str = ""
+    annotation_urls: set[str] = field(default_factory=set)
+    has_response: bool = False
+    last_error: str = ""
+
+    @property
+    def completed(self) -> bool:
+        return self.status == "completed"
+
+
+def _delete_thread(client: AgentsClient, thread_id: str) -> None:
+    """Best-effort removal so request content doesn't accumulate in the Foundry project."""
+    try:
+        client.threads.delete(thread_id)
+    except Exception as exc:
+        logger.warning("Could not delete agent thread %s: %s", thread_id, exc)
+
+
+def run_agent_prompt(agent_id: str, content: str) -> AgentRunResult:
+    """Send *content* to an agent on a new thread, wait for the run, and return its reply.
+
+    Blocking: call from a worker thread, not from the event loop. The run is cancelled if
+    it exceeds ``RUN_TIMEOUT_SECONDS`` (status ``timed_out``), and the thread is always deleted.
+    """
+    client = _get_agents_client()
+    timeout = get_settings().run_timeout_seconds
+    thread = client.threads.create()
+    try:
+        client.messages.create(thread_id=thread.id, role=MessageRole.USER, content=content)
+        run = client.runs.create(thread_id=thread.id, agent_id=agent_id)
+        logger.info("Started run %s", run.id)
+
+        deadline = time.monotonic() + timeout
+        status = run.status
+        while status in _ACTIVE_RUN_STATES:
+            if time.monotonic() >= deadline:
+                logger.error("Run %s still '%s' after %ds – cancelling", run.id, status, timeout)
+                try:
+                    client.runs.cancel(thread_id=thread.id, run_id=run.id)
+                except Exception as exc:
+                    logger.warning("Could not cancel run %s: %s", run.id, exc)
+                status = "timed_out"
+                break
+            time.sleep(1)
+            run = client.runs.get(thread_id=thread.id, run_id=run.id)
+            status = run.status
+
+        result = AgentRunResult(
+            status=status,
+            run_id=run.id,
+            last_error=str(getattr(run, "last_error", "") or ""),
+        )
+        if status != "completed":
+            return result
+
+        for msg in client.messages.list(thread_id=thread.id):
+            if msg.role != MessageRole.AGENT:
+                continue
+            result.has_response = True
+            for block in msg.content:
+                if hasattr(block, "text"):
+                    result.text += block.text.value
+                    for ann in getattr(block.text, "annotations", None) or []:
+                        if hasattr(ann, "url"):
+                            result.annotation_urls.add(ann.url)
+        return result
+    finally:
+        _delete_thread(client, thread.id)
+
+
 # ── Public API ────────────────────────────────────────────────
 
 
@@ -293,7 +375,6 @@ def run_draft(
     user_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create an agent, submit the full RFP, and return the draft JSON."""
-    agents_client = _get_agents_client()
 
     # Step 1: Retrieve relevant knowledge base content
     search_query = requirements_json[:500]  # Use requirements as search query
@@ -318,9 +399,7 @@ def run_draft(
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     logger.info("Using draft agent %s for RFP %s", agent_id, rfp_id)
 
-    # Create thread and submit message
-    thread = agents_client.threads.create()
-
+    # Submit the full RFP to the agent
     user_message = (
         f"Draft a complete RFP response. Tone: {tone}.\n\n"
         f"CRITICAL: You MUST produce exactly one response object for EACH requirement listed below. "
@@ -343,44 +422,17 @@ def run_draft(
         f"Here are the requirements to respond to:\n{requirements_json}"
     )
 
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=user_message,
-    )
+    result = run_agent_prompt(agent_id, user_message)
 
-    # Run and poll
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    logger.info("Started run %s", run.id)
+    if not result.completed:
+        logger.error("Agent run failed: %s – %s", result.status, result.last_error)
+        return {"error": f"Agent run ended with status: {result.status}"}
 
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-    if run.status != "completed":
-        logger.error("Agent run failed: %s – %s", run.status, getattr(run, "last_error", ""))
-        return {"error": f"Agent run ended with status: {run.status}"}
-
-    # Retrieve messages
-    messages = agents_client.messages.list(thread_id=thread.id)
-    assistant_msgs = [
-        m for m in messages if m.role == MessageRole.AGENT
-    ]
-
-    if not assistant_msgs:
+    if not result.has_response:
         return {"error": "No assistant response received"}
 
-    raw_text = ""
-    retrieved_urls: set[str] = set()
-    for msg in assistant_msgs:
-        for block in msg.content:
-            if hasattr(block, "text"):
-                raw_text += block.text.value
-                # Collect citation URLs from annotations
-                if hasattr(block.text, "annotations"):
-                    for ann in block.text.annotations:
-                        if hasattr(ann, "url"):
-                            retrieved_urls.add(ann.url)
+    raw_text = result.text
+    retrieved_urls = result.annotation_urls
 
     # Citation hygiene
     clean_text = _validate_citations(raw_text, retrieved_urls)
@@ -406,7 +458,7 @@ def run_draft(
     draft["_meta"] = {
         "rfp_id": rfp_id,
         "agent_id": agent_id,
-        "run_id": run.id,
+        "run_id": result.run_id,
         "violations_redacted": len(violations),
     }
     return draft
@@ -421,7 +473,6 @@ def _answer_single_requirement(
     user_context: str = "",
 ) -> dict[str, Any]:
     """Process a single requirement through the agent and return structured response."""
-    agents_client = _get_agents_client()
     req_id = requirement.get("id", "?")
     req_text = requirement.get("text", "")
 
@@ -429,11 +480,9 @@ def _answer_single_requirement(
     if user_context:
         context_preamble = f"## Company / Response Context\n{user_context}\n\n"
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Respond to this single RFP requirement. Tone: {tone}.\n\n"
             f"{context_preamble}"
             f"Return ONLY a JSON object (no markdown wrapping) with these fields:\n"
@@ -454,17 +503,12 @@ def _answer_single_requirement(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-    if run.status != "completed":
-        logger.error("Requirement %s run failed: %s", req_id, run.status)
+    if not result.completed:
+        logger.error("Requirement %s run failed: %s", req_id, result.status)
         return {
             "requirement_id": req_id,
             "requirement_text": req_text,
-            "answer_markdown": f"Agent run failed with status: {run.status}",
+            "answer_markdown": f"Agent run failed with status: {result.status}",
             "meets": "No",
             "evidence": [],
             "assumptions": [],
@@ -472,15 +516,7 @@ def _answer_single_requirement(
             "followups": [],
         }
 
-    messages = agents_client.messages.list(thread_id=thread.id)
-    raw_text = ""
-    for msg in messages:
-        if msg.role == MessageRole.AGENT:
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    raw_text += block.text.value
-
-    safe_text, _ = _post_generation_guard(raw_text)
+    safe_text, _ = _post_generation_guard(result.text)
 
     try:
         json_str = safe_text
@@ -514,18 +550,15 @@ def _generate_section_narrative(
     agent_id: str,
 ) -> dict[str, Any]:
     """Generate one section narrative from a list of requirements."""
-    agents_client = _get_agents_client()
 
     req_details = "\n".join(
         f"- [{r.get('id','?')}] ({r.get('priority','standard')}): {r.get('text','')}"
         for r in section_reqs
     )
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Write the \"{section_name}\" section of an RFP response document. "
             f"Tone: {tone}.\n\n"
             f"This section must address the following requirements:\n{req_details}\n\n"
@@ -540,27 +573,14 @@ def _generate_section_narrative(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-    if run.status != "completed":
+    if not result.completed:
         return {
             "section_name": section_name,
-            "narrative_markdown": f"Section generation failed: {run.status}",
+            "narrative_markdown": f"Section generation failed: {result.status}",
             "requirement_ids": req_ids,
         }
 
-    messages = agents_client.messages.list(thread_id=thread.id)
-    raw = ""
-    for msg in messages:
-        if msg.role == MessageRole.AGENT:
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    raw += block.text.value
-
-    safe, _ = _post_generation_guard(raw)
+    safe, _ = _post_generation_guard(result.text)
     try:
         text = safe
         if "```json" in text:
@@ -586,7 +606,6 @@ def _generate_section_narrative_from_answers(
     agent_id: str,
 ) -> dict[str, Any]:
     """Generate one section narrative from pre-generated requirement answers."""
-    agents_client = _get_agents_client()
 
     answers_digest = "\n\n".join(
         f"### [{a.get('requirement_id', '?')}] (Compliance: {a.get('meets', '?')})\n"
@@ -595,11 +614,9 @@ def _generate_section_narrative_from_answers(
         for a in section_answers
     )
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Write the \"{section_name}\" section of a professional RFP response document.\n"
             f"Tone: {tone}.\n\n"
             f"Below are the individual requirement responses that belong in this section. "
@@ -615,26 +632,14 @@ def _generate_section_narrative_from_answers(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
-    if run.status != "completed":
+    if not result.completed:
         return {
             "section_name": section_name,
-            "narrative_markdown": f"Section generation failed: {run.status}",
+            "narrative_markdown": f"Section generation failed: {result.status}",
             "requirement_ids": req_ids,
         }
 
-    messages = agents_client.messages.list(thread_id=thread.id)
-    raw = ""
-    for msg in messages:
-        if msg.role == MessageRole.AGENT:
-            for block in msg.content:
-                if hasattr(block, "text"):
-                    raw += block.text.value
-    safe, _ = _post_generation_guard(raw)
+    safe, _ = _post_generation_guard(result.text)
     try:
         text = safe
         if "```json" in text:
@@ -725,7 +730,6 @@ def stream_per_section(
     Step 3 — Generate compliance matrix entries for all requirements.
     Yields events: section_map, section_narrative, requirement_compliance, complete.
     """
-    agents_client = _get_agents_client()
     settings = get_settings()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     section_workers = max(1, settings.section_parallelism)
@@ -753,11 +757,9 @@ def stream_per_section(
         f"- {r.get('id','?')}: {r.get('text','')[:120]}" for r in requirements
     )
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Classify each requirement below into the most appropriate document section.\n\n"
             f"Available sections: {json.dumps(section_names)}\n\n"
             f"Requirements:\n{req_summaries}\n\n"
@@ -767,22 +769,10 @@ def stream_per_section(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
     section_map: dict[str, list[str]] = {}
-    if run.status == "completed":
-        messages = agents_client.messages.list(thread_id=thread.id)
-        raw = ""
-        for msg in messages:
-            if msg.role == MessageRole.AGENT:
-                for block in msg.content:
-                    if hasattr(block, "text"):
-                        raw += block.text.value
+    if result.completed:
         try:
-            text = raw
+            text = result.text
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0]
             elif "```" in text:
@@ -911,7 +901,6 @@ def stream_map_reduce(
 
     This separates accuracy (Phase 1) from presentation (Phase 2).
     """
-    agents_client = _get_agents_client()
     settings = get_settings()
     agent_id = _ensure_agent(_DRAFT_AGENT_NAME)
     section_workers = max(1, settings.section_parallelism)
@@ -975,11 +964,9 @@ def stream_map_reduce(
         for r in all_responses
     )
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Classify each requirement into the best document section.\n\n"
             f"Sections: {json.dumps(section_names)}\n\n"
             f"Requirements:\n{req_summaries}\n\n"
@@ -989,22 +976,10 @@ def stream_map_reduce(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
-
     section_map: dict[str, list[str]] = {}
-    if run.status == "completed":
-        messages = agents_client.messages.list(thread_id=thread.id)
-        raw = ""
-        for msg in messages:
-            if msg.role == MessageRole.AGENT:
-                for block in msg.content:
-                    if hasattr(block, "text"):
-                        raw += block.text.value
+    if result.completed:
         try:
-            text = raw
+            text = result.text
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0]
             elif "```" in text:
@@ -1079,7 +1054,6 @@ def run_single_answer(
     user_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     """Answer a single question using the grounded agent."""
-    agents_client = _get_agents_client()
 
     # Retrieve relevant context
     retrieved_docs = _search_knowledge_base(
@@ -1097,11 +1071,9 @@ def run_single_answer(
     # Get or create the persistent QA agent
     agent_id = _ensure_agent(_QA_AGENT_NAME)
 
-    thread = agents_client.threads.create()
-    agents_client.messages.create(
-        thread_id=thread.id,
-        role=MessageRole.USER,
-        content=(
+    result = run_agent_prompt(
+        agent_id,
+        (
             f"Answer the following question using ONLY the retrieved sources below.  "
             f"Return a JSON object with answer_markdown, evidence, assumptions, "
             f"and followups.\n\n"
@@ -1110,24 +1082,10 @@ def run_single_answer(
         ),
     )
 
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent_id)
-    while run.status in ("queued", "in_progress", "requires_action"):
-        time.sleep(1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+    if not result.completed:
+        return {"error": f"Agent run ended with status: {result.status}"}
 
-    if run.status != "completed":
-        return {"error": f"Agent run ended with status: {run.status}"}
-
-    messages = agents_client.messages.list(thread_id=thread.id)
-    assistant_msgs = [m for m in messages if m.role == MessageRole.AGENT]
-
-    raw_text = ""
-    for msg in assistant_msgs:
-        for block in msg.content:
-            if hasattr(block, "text"):
-                raw_text += block.text.value
-
-    safe_text, violations = _post_generation_guard(raw_text)
+    safe_text, violations = _post_generation_guard(result.text)
 
     try:
         json_str = safe_text
