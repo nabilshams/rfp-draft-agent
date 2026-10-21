@@ -1,5 +1,6 @@
 # Azure AI Foundry Agent SDK
 azure-ai-projects>=1.0.0b5
+azure-ai-agents>=1.1.0
 azure-ai-inference>=1.0.0b7
 azure-identity>=1.19.0
 

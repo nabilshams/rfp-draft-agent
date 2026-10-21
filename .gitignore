@@ -13,3 +13,5 @@ build/
 htmlcov/
 *.log
 .vscode/
+# azd environment state (contains subscription/tenant IDs)
+.azure/

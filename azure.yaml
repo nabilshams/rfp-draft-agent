@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: rfp-draft-agent
+metadata:
+  template: rfp-draft-agent@0.1.0
+
+services:
+  api:
+    project: .
+    language: python
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .
+      # Build in Azure Container Registry so Docker isn't required locally.
+      remoteBuild: true

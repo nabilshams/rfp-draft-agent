@@ -60,11 +60,12 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 - Python 3.11+
 - Azure subscription with:
   - Azure AI Foundry project (with a GPT-4o deployment)
-  - Azure AI Search (Standard tier)
+  - Azure AI Search (Basic tier or higher)
   - Azure Blob Storage account
   - Application Insights
   - Entra ID app registration (for production auth)
 - Docker (optional, for containerised deployment)
+- [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) and Azure CLI (for deploying to Azure)
 
 ---
 
@@ -251,30 +252,53 @@ curl -O http://localhost:8000/outputs/abc123/compliance.xlsx
 
 ## Infrastructure Deployment
 
-```bash
-az group create -n rg-rfp-agent -l eastus2
-
-az deployment group create \
-  -g rg-rfp-agent \
-  -f infra/main.bicep \
-  -p baseName=rfpagent \
-     foundryProjectEndpoint=https://your-project.services.ai.azure.com \
-     entraTenantId=<tenant-id> \
-     entraClientId=<client-id>
-```
-
-To deploy with a container image:
+The app deploys to **Azure Container Apps** with the [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) (`azd`).
 
 ```bash
-az deployment group create \
-  -g rg-rfp-agent \
-  -f infra/main.bicep \
-  -p baseName=rfpagent \
-     containerImage=myacr.azurecr.io/rfp-agent:latest \
-     foundryProjectEndpoint=https://your-project.services.ai.azure.com \
-     entraTenantId=<tenant-id> \
-     entraClientId=<client-id>
+azd auth login
+azd up          # prompts for environment name, subscription and region, then provisions + deploys
 ```
+
+`azd up` runs `azd provision` (Bicep in `infra/`) followed by `azd deploy` (builds the image remotely in
+Azure Container Registry, so local Docker is not required). It prints the app URL (`SERVICE_API_ENDPOINT_URL`).
+Use `azd deploy` for code-only updates and `azd down --purge` to delete everything.
+
+**What gets created** (resource group `rg-<environment>`):
+
+| Resource | Purpose |
+|---|---|
+| Container Apps environment + app (1 vCPU / 2 GiB, single replica) | Hosts the API and UI |
+| Container Registry (Basic) | Stores the image (pulled with managed identity) |
+| AI Services account + Foundry project | Agents; `gpt-4o` and `text-embedding-3-small` deployments |
+| AI Search (`basic`) | Knowledge-base index (created on first KB ingest) |
+| Storage account | `knowledge-base`, `rfp-uploads`, `outputs` containers |
+| Log Analytics + Application Insights | Logs and traces |
+| User-assigned managed identity | Used by the app; has the data-plane roles below |
+
+Keyless by design: storage, search and AI Services have local (key) auth disabled and the app uses
+`DefaultAzureCredential`. The managed identity gets Storage Blob Data Contributor, Search Index Data
+Contributor, Search Service Contributor, Azure AI User and Cognitive Services OpenAI User. The identity
+running `azd` gets the same roles so you can run the app and scripts locally.
+
+**Requirements:** an Azure subscription where you can create role assignments (Owner, or Contributor +
+User Access Administrator), quota for `gpt-4o` (GlobalStandard, 30K TPM) and `text-embedding-3-small`
+in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `Microsoft.CognitiveServices`,
+`Microsoft.Search` resource providers registered.
+
+**Optional settings** (`azd env set <NAME> <value>` before `azd up`/`azd provision`):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ENTRA_TENANT_ID` | `dev` | `dev` disables authentication. Set your tenant ID (plus `ENTRA_CLIENT_ID`, optionally `ENTRA_AUDIENCE`) to enforce JWT validation. The built-in UI has no sign-in yet, so it needs bearer tokens from another client. |
+| `ALLOWED_IP_RANGES` | _(empty = open)_ | Comma-separated CIDRs allowed to reach the app, e.g. `203.0.113.4/32,198.51.100.0/24`. |
+| `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When empty, agents are created without Bing grounding. |
+
+> **Security:** with the default `ENTRA_TENANT_ID=dev` the deployed app has **no authentication** and is
+> reachable from the internet. Set `ALLOWED_IP_RANGES` or configure Entra before loading real RFP data.
+
+After the first deploy, upload documents through the UI or `POST /kb/upload` + `POST /kb/ingest`; the
+search index is created on first ingest. To run locally against the deployed resources, copy the values
+from `azd env get-values` into `.env`.
 
 ---
 
@@ -341,7 +365,10 @@ rfp-draft-agent/
 ├── config/
 │   └── redaction_policy.yml       # Redaction rules (YAML)
 ├── infra/
-│   └── main.bicep                 # IaC for Search, Storage, AppInsights, Container Apps
+│   ├── main.bicep                 # azd entry point (subscription scope, creates the resource group)
+│   ├── resources.bicep            # Foundry, Search, Storage, ACR, Container Apps, RBAC
+│   └── main.parameters.json       # Maps azd environment values to Bicep parameters
+├── azure.yaml                     # azd service definition (Container App, remote build)
 ├── templates/
 │   └── rfp_response_template.docx # DOCX template (generate with scripts/create_template.py)
 ├── scripts/
