@@ -73,6 +73,9 @@ param embeddingModelCapacity int = 50
 @allowed(['basic', 'standard', 'standard2', 'standard3'])
 param searchSku string = 'basic'
 
+@description('Email address that receives alerts (failed requests, exceptions, restarts). Leave empty to create the alerts without notifications.')
+param alertEmail string = ''
+
 var tags = {
   'azd-env-name': environmentName
 }
@@ -113,6 +116,7 @@ module resources 'resources.bicep' = {
     embeddingModelSku: embeddingModelSku
     embeddingModelCapacity: embeddingModelCapacity
     searchSku: searchSku
+    alertEmail: alertEmail
   }
 }
 

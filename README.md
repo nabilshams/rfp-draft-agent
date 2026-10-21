@@ -77,7 +77,7 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 git clone <repo-url> && cd rfp-draft-agent
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt   # the pinned lock file (see "Dependencies" below)
 pip install -e ".[dev]"
 ```
 
@@ -324,8 +324,8 @@ Use `azd deploy` for code-only updates and `azd down --purge` to delete everythi
 | Container Registry (Basic) | Stores the image (pulled with managed identity) |
 | AI Services account + Foundry project | Agents; `gpt-4o` and `text-embedding-3-small` deployments |
 | AI Search (`basic`) | Knowledge-base index (created on first KB ingest) |
-| Storage account | `knowledge-base`, `rfp-uploads`, `outputs` containers |
-| Log Analytics + Application Insights | Logs and traces |
+| Storage account | `knowledge-base`, `rfp-uploads`, `outputs` and `draft-jobs` containers |
+| Log Analytics + Application Insights + alert rules | Logs, traces and alerts (see [Monitoring and alerts](#monitoring-and-alerts)) |
 | User-assigned managed identity | Used by the app; has the data-plane roles below |
 
 Keyless by design: storage, search and AI Services have local (key) auth disabled and the app uses
@@ -347,10 +347,74 @@ in the chosen region, and the `Microsoft.App`, `Microsoft.ContainerRegistry`, `M
 | `ADMIN_OIDS` | _(empty)_ | Object IDs of administrators who can manage every RFP and KB document. `scripts/setup_auth.py` sets it to the signed-in user. See [Access model](#access-model). |
 | `BING_CONNECTION_ID` | _(empty)_ | Resource ID of an existing Grounding-with-Bing connection in the Foundry project. When set, users can opt in to web search per request; see [Web search](#web-search-bing-grounding) for the data-flow caveat. When empty, web search is unavailable. |
 | `REDACTION_CUSTOMER_NAMES` | _(empty)_ | Semicolon-separated customer names to redact everywhere, e.g. `Contoso Ltd;Fabrikam`. Stored as a Container Apps secret. See [Redaction guardrails](#redaction-guardrails). |
+| `ALERT_EMAIL` | _(empty)_ | Address that receives alert emails. See [Monitoring and alerts](#monitoring-and-alerts). |
 
 > **Security:** with the default `AUTH_MODE=disabled` the deployed app has **no authentication** and is
-> reachable from the internet; the app logs a warning at startup. Turn on [authentication](#authentication)
-> or set `ALLOWED_IP_RANGES` before loading real RFP data.
+> reachable from the internet. `azd provision` prints a warning when that is the case (and the app logs one at
+> startup). Turn on [authentication](#authentication) or set `ALLOWED_IP_RANGES` before loading real RFP data.
+
+### Dependencies
+
+`requirements.in` lists the direct dependencies with minimum versions; `requirements.txt` is the **lock file**
+generated from it (every package pinned, for Python 3.11, the version used by the Dockerfile and CI). The image
+and CI install the lock file, so builds are repeatable. To update it:
+
+```bash
+uv pip compile requirements.in --python-version 3.11 --universal -o requirements.txt --no-header
+pytest tests/        # run the suite against the new versions before committing
+```
+
+Dependabot proposes weekly updates (grouped for the Azure SDKs and OpenTelemetry).
+
+### Continuous deployment
+
+`.github/workflows/deploy.yml` deploys on demand (**Actions → Deploy → Run workflow**): it runs lint and tests, then
+`azd deploy` (and `azd provision` when you tick the box) using OIDC federation, so no credentials are stored in
+GitHub. It is manual on purpose, because a deployment changes billable resources. One-time setup:
+
+```bash
+azd pipeline config --provider github     # creates the federated credential and the repository variables
+```
+
+(or create a service principal with a federated credential for this repository and set the variables listed at the
+top of the workflow). Add `ENTRA_CLIENT_SECRET` as a repository **secret** when `AUTH_MODE=easyauth`, and put
+required reviewers on the `production` environment in the repository settings. The workflow has not been run from
+GitHub yet; the same `azd` commands were run from a workstation.
+
+### Monitoring and alerts
+
+Alert rules are created with the infrastructure (`infra/modules/alerts.bicep`): server errors on real requests
+(5 or more in 15 minutes, health probes excluded), unhandled exceptions (10 or more in 15 minutes) and container
+restarts (more than 2 in 15 minutes, which is what a crash loop from bad configuration looks like). Set
+`azd env set ALERT_EMAIL you@example.com` before `azd provision` to be emailed; without it the alerts still fire and
+appear in the portal. Logs and traces go to Application Insights and Log Analytics (`ContainerAppConsoleLogs_CL`).
+
+### Cost and quota
+
+Rough monthly cost of the defaults in `australiaeast`, idle (check the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator/) for current figures):
+
+| Resource | Notes |
+|---|---|
+| AI Search `basic` | The largest fixed cost: billed per hour whether or not it is used. Use `searchSku` and `azd down` for throwaway environments. |
+| Container Apps (1 vCPU / 2 GiB, 1 replica always on) | `minReplicas: 1` keeps the live log stream and background drafts alive; it is billed while running. |
+| Container Registry `Basic` | Small fixed cost. |
+| Log Analytics / Application Insights | Pay per GB ingested; 30-day retention. |
+| Alert rules | A small per-rule monthly fee for the log alerts. |
+| `gpt-4o` (GlobalStandard, 30K TPM) and `text-embedding-3-small` (50K TPM) | Pay per token. The capacity is quota, not spend, but the region must have it available. |
+
+Web search through Bing grounding, the semantic ranker (`SEARCH_SEMANTIC_RANKER`) and each draft's model calls are
+metered separately. A draft makes about one model call per requirement, plus a few for sections.
+
+### Not covered yet
+
+- **Single replica.** The live log stream, `/metrics` counters and the per-user rate limiter are held in process
+  memory, so the app runs one replica. Background-draft state is already in Blob Storage; move the rest out of
+  process (and the in-process job workers to a queue-triggered worker) before scaling out.
+- **Private networking.** Storage, Search and AI Services have public network access (protected by Entra ID and
+  RBAC, with key auth disabled). Private endpoints and a VNet are not configured; add them if your policy requires it.
+- **Grounding with Bing.** The connection is created by hand in the Foundry portal (Management center → Connected
+  resources); put its resource ID in `BING_CONNECTION_ID` (`scripts/list_connections.py` lists it). Read
+  [Web search](#web-search-bing-grounding) about the data flow before enabling it.
 
 ### Authentication
 
@@ -414,8 +478,8 @@ process; at most `JOB_MAX_ACTIVE_PER_USER` unfinished jobs per user, else `429`)
 - **Cancel** with `POST /drafts/{job_id}/cancel`; the worker stops between steps (a step is one agent call, so it
   can take a moment).
 - **Access** is the owner or an administrator; anyone else gets `404`.
-- Job blobs are not deleted automatically. Add a [lifecycle management rule](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview)
-  to the `draft-jobs` container (for example delete after 7 days).
+- Job blobs are deleted after 7 days by a storage lifecycle rule created with the infrastructure
+  (`infra/resources.bicep`).
 - The documents are stored exactly as for `/draft`: download them from `/outputs/{rfp_id}/draft.docx` and
   `compliance.xlsx` when the job succeeds.
 
@@ -611,6 +675,7 @@ rfp-draft-agent/
 ├── infra/
 │   ├── main.bicep                 # azd entry point (subscription scope, creates the resource group)
 │   ├── resources.bicep            # Foundry, Search, Storage, ACR, Container Apps, RBAC
+│   ├── modules/alerts.bicep       # Alert rules (failed requests, exceptions, restarts)
 │   └── main.parameters.json       # Maps azd environment values to Bicep parameters
 ├── azure.yaml                     # azd service definition (Container App, remote build)
 ├── templates/
@@ -618,16 +683,20 @@ rfp-draft-agent/
 ├── scripts/
 │   ├── create_template.py         # Generate the DOCX template
 │   ├── setup_auth.py              # Create the Entra app registration for Easy Auth (azd)
+│   ├── check_exposure.py          # azd post-provision hook: warns about open, unauthenticated deployments
 │   ├── eval_retrieval.py          # Compare keyword / hybrid / semantic retrieval on your KB
 │   ├── list_connections.py        # List Foundry project connections (find the BING_CONNECTION_ID)
 │   └── demo.py                    # End-to-end demo script
 ├── evals/
 │   └── retrieval_cases.example.jsonl   # Example evaluation cases (adapt to your KB)
 ├── tests/                         # pytest suite; Azure and the agent are faked (conftest.py blocks real clients)
-├── .github/workflows/ci.yml
+├── .github/workflows/ci.yml       # Lint + tests + image build on every PR
+├── .github/workflows/deploy.yml   # Manual azd deployment (OIDC)
+├── .github/dependabot.yml
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
+├── requirements.in                # Direct dependencies
+├── requirements.txt               # Lock file generated from requirements.in
 ├── pyproject.toml
 ├── .env.example
 └── README.md

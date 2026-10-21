@@ -32,6 +32,8 @@ param embeddingModelVersion string
 param embeddingModelSku string
 param embeddingModelCapacity int
 param searchSku string
+@description('Email address that receives alerts (failed requests, exceptions, restarts). Empty = alerts without notifications.')
+param alertEmail string
 
 // ── Names ───────────────────────────────────────────────
 
@@ -127,6 +129,35 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     }
     resource draftJobs 'containers' = {
       name: 'draft-jobs'
+    }
+  }
+
+  // Draft job records are only useful while someone is polling them; keep them a week.
+  resource lifecycle 'managementPolicies' = {
+    name: 'default'
+    properties: {
+      policy: {
+        rules: [
+          {
+            name: 'delete-old-draft-jobs'
+            enabled: true
+            type: 'Lifecycle'
+            definition: {
+              filters: {
+                blobTypes: ['blockBlob']
+                prefixMatch: ['draft-jobs/']
+              }
+              actions: {
+                baseBlob: {
+                  delete: {
+                    daysAfterModificationGreaterThan: 7
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
     }
   }
 }
@@ -494,6 +525,20 @@ resource userAiRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for
 }]
 
 // ── Outputs ─────────────────────────────────────────────
+
+// ── Alerts ──────────────────────────────────────────────
+
+module alerts 'modules/alerts.bicep' = {
+  name: 'alerts'
+  params: {
+    location: location
+    tags: tags
+    appInsightsId: appInsights.id
+    containerAppId: apiApp.id
+    alertEmail: alertEmail
+    namePrefix: 'rfp-${token}'
+  }
+}
 
 output containerRegistryEndpoint string = registry.properties.loginServer
 output containerRegistryName string = registry.name
