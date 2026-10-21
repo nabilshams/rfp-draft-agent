@@ -12,6 +12,7 @@
     "entraClientId": { "value": "${ENTRA_CLIENT_ID=}" },
     "entraClientSecret": { "value": "${ENTRA_CLIENT_SECRET=}" },
     "entraAudience": { "value": "${ENTRA_AUDIENCE=}" },
+    "adminOids": { "value": "${ADMIN_OIDS=}" },
     "bingConnectionId": { "value": "${BING_CONNECTION_ID=}" },
     "allowedIpRanges": { "value": "${ALLOWED_IP_RANGES=}" }
   }

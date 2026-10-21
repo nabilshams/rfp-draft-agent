@@ -23,7 +23,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import (
     Depends,
@@ -39,14 +39,29 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.auth.access import (
+    OWNER_KEY,
+    KbAcl,
+    can_manage,
+    can_view_kb,
+    kb_metadata,
+    parse_group_list,
+    parse_kb_acl,
+    require_admin,
+    require_rfp_access,
+    resolve_share_groups,
+)
 from app.auth.entra import UserClaims, authenticate, get_current_user, log_auth_mode
+from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
+from app.validation import OUTPUT_FILENAMES, Filename, KbBlobName, RfpId, Segment, check_filename
 
 logger = logging.getLogger(__name__)
 
 _CONSOLE_HANDLER_NAME = "rfp-console"
+_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "rfp_response_template.docx"
 
 # ── Counters for /metrics ────────────────────────────────
 _counters: dict[str, int] = {
@@ -219,15 +234,15 @@ async def ws_logs(websocket: WebSocket, settings: Settings = Depends(get_setting
 
 
 class ExtractRequest(BaseModel):
-    rfp_id: str
-    filename: str
+    rfp_id: RfpId
+    filename: Filename
 
 
 class DraftRequest(BaseModel):
-    rfp_id: str
-    client_id: str
-    project_id: str
-    solution_area: str | None = None
+    rfp_id: RfpId
+    client_id: Segment
+    project_id: Segment
+    solution_area: Segment | None = None
     tone: str = "professional"
     approach: str = "per_requirement"  # "per_requirement" or "per_section" or "map_reduce"
     context: str = ""  # common context applied to every requirement
@@ -236,30 +251,95 @@ class DraftRequest(BaseModel):
 
 class AnswerRequest(BaseModel):
     question: str
-    client_id: str
-    project_id: str
-    solution_area: str | None = None
+    client_id: Segment
+    project_id: Segment
+    solution_area: Segment | None = None
 
 
 class IngestRequest(BaseModel):
-    blob_name: str
-    client_id: str
-    project_id: str
-    solution_area: str
-    oids: list[str] = []
-    groups: list[str] = []
+    """Re-ingest a KB document you own. Access comes from the blob's recorded owner and shared groups."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blob_name: KbBlobName
     redaction_level: str = "standard"
 
 
 class GenerateDocRequest(BaseModel):
-    rfp_id: str
+    rfp_id: RfpId
     responses: list[dict[str, Any]]
     section_narratives: list[dict[str, Any]] = []
     approach: str = "per_requirement"
-    client_id: str = "demo-client"
-    project_id: str = "demo-project"
-    solution_area: str = "general"
+    client_id: Segment = "demo-client"
+    project_id: Segment = "demo-project"
+    solution_area: Segment = "general"
     tone: str = "professional"
+
+
+# ── Upload helpers ───────────────────────────────────────
+
+
+def _validated_upload_filename(file: UploadFile, allowed_ext: tuple[str, ...]) -> str:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    try:
+        check_filename(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid file name: {exc}") from exc
+    if not file.filename.lower().endswith(allowed_ext):
+        raise HTTPException(status_code=400, detail=f"Only {allowed_ext} files are supported")
+    return file.filename
+
+
+def _read_upload(file: UploadFile, settings: Settings) -> bytes:
+    """Read an uploaded file, rejecting anything over MAX_UPLOAD_MB."""
+    limit = settings.max_upload_mb * 1024 * 1024
+    data = file.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(status_code=413, detail=f"File too large (maximum {settings.max_upload_mb} MB)")
+    return data
+
+
+# ── Storage and knowledge-base helpers ───────────────────
+
+
+def _container(settings: Settings, name: str):
+    from azure.identity import DefaultAzureCredential
+    from azure.storage.blob import BlobServiceClient
+
+    service = BlobServiceClient(
+        account_url=settings.azure_storage_account_url,
+        credential=DefaultAzureCredential(),
+    )
+    return service.get_container_client(name)
+
+
+def _existing_kb_acl(container, blob_name: str) -> tuple[bool, KbAcl | None]:
+    """(exists, recorded ACL) for a KB blob."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    try:
+        props = container.get_blob_client(blob_name).get_blob_properties()
+    except ResourceNotFoundError:
+        return False, None
+    return True, parse_kb_acl(props.metadata)
+
+
+def _load_kb_document(container, blob_name: str, user: UserClaims, settings: Settings) -> KbAcl | None:
+    """The ACL of a KB document the user is allowed to see.
+
+    Missing documents and documents the user cannot see both give 404 so existence isn't revealed.
+    """
+    exists, acl = _existing_kb_acl(container, blob_name)
+    if not exists or not can_view_kb(acl, user, settings):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return acl
+
+
+def _require_kb_manage(acl: KbAcl | None, blob_name: str, user: UserClaims, settings: Settings) -> None:
+    if not can_manage(acl.owner if acl else None, user, settings):
+        logger.warning("User %s denied changes to KB document %s", user.oid, blob_name)
+        raise HTTPException(status_code=403, detail="Only the document's owner or an administrator can do this")
 
 
 # ── Health / Metrics ─────────────────────────────────────
@@ -278,25 +358,20 @@ async def metrics(user: UserClaims = Depends(get_current_user)):
 # ── RFP Upload ───────────────────────────────────────────
 
 
-@app.post("/rfp/upload", tags=["rfp"])
+@app.post("/rfp/upload", tags=["rfp"], dependencies=[Depends(rate_limited)])
 def rfp_upload(
     file: UploadFile = File(...),
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Upload an RFP document to Azure Blob Storage."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
-
-    allowed_ext = (".pdf", ".docx", ".xlsx", ".xls", ".csv")
-    if not any(file.filename.lower().endswith(ext) for ext in allowed_ext):
-        raise HTTPException(status_code=400, detail=f"Only {allowed_ext} files are supported")
+    """Upload an RFP document to Azure Blob Storage. The uploader becomes its owner."""
+    filename = _validated_upload_filename(file, (".pdf", ".docx", ".xlsx", ".xls", ".csv"))
 
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import BlobServiceClient
 
     rfp_id = str(uuid.uuid4())[:12]
-    blob_name = f"{rfp_id}/{file.filename}"
+    blob_name = f"{rfp_id}/{filename}"
 
     blob_service = BlobServiceClient(
         account_url=settings.azure_storage_account_url,
@@ -304,8 +379,8 @@ def rfp_upload(
     )
     container = blob_service.get_container_client(settings.storage_rfp_container)
 
-    data = file.file.read()
-    container.upload_blob(name=blob_name, data=data, overwrite=True)
+    data = _read_upload(file, settings)
+    container.upload_blob(name=blob_name, data=data, overwrite=True, metadata={OWNER_KEY: user.oid})
 
     _bump("rfp_uploads")
     logger.info("Uploaded RFP %s (%d bytes) by user %s", blob_name, len(data), user.oid)
@@ -313,7 +388,7 @@ def rfp_upload(
     return {
         "rfp_id": rfp_id,
         "blob_name": blob_name,
-        "filename": file.filename,
+        "filename": filename,
         "size_bytes": len(data),
     }
 
@@ -339,6 +414,7 @@ def rfp_extract(
         credential=DefaultAzureCredential(),
     )
     container = blob_service.get_container_client(settings.storage_rfp_container)
+    require_rfp_access(container, req.rfp_id, user, settings)
 
     try:
         data = container.download_blob(blob_name).readall()
@@ -369,7 +445,7 @@ def rfp_extract(
 # ── AI-powered Extraction ─────────────────────────────────
 
 
-@app.post("/rfp/extract-ai", tags=["rfp"])
+@app.post("/rfp/extract-ai", tags=["rfp"], dependencies=[Depends(rate_limited)])
 def rfp_extract_ai(
     req: ExtractRequest,
     user: UserClaims = Depends(get_current_user),
@@ -395,6 +471,7 @@ def rfp_extract_ai(
         credential=DefaultAzureCredential(),
     )
     container = blob_service.get_container_client(settings.storage_rfp_container)
+    require_rfp_access(container, req.rfp_id, user, settings)
 
     try:
         data = container.download_blob(blob_name).readall()
@@ -481,7 +558,7 @@ def rfp_extract_ai(
 # ── Draft ─────────────────────────────────────────────────
 
 
-@app.post("/draft", tags=["agent"])
+@app.post("/draft", tags=["agent"], dependencies=[Depends(rate_limited)])
 def draft(
     req: DraftRequest,
     user: UserClaims = Depends(get_current_user),
@@ -505,13 +582,9 @@ def draft(
         credential=DefaultAzureCredential(),
     )
 
-    # Find the RFP blob
+    # Find the RFP blob (404 if it doesn't exist or belongs to someone else)
     rfp_container = blob_service.get_container_client(settings.storage_rfp_container)
-    blobs = list(rfp_container.list_blobs(name_starts_with=f"{req.rfp_id}/"))
-    if not blobs:
-        raise HTTPException(status_code=404, detail=f"No RFP found for id {req.rfp_id}")
-
-    blob_name = blobs[0].name
+    blob_name = require_rfp_access(rfp_container, req.rfp_id, user, settings).name
     data = rfp_container.download_blob(blob_name).readall()
     filename = blob_name.rsplit("/", 1)[-1]
 
@@ -597,7 +670,7 @@ def draft(
 # ── Streaming Draft (SSE) ────────────────────────────────
 
 
-@app.post("/draft/stream", tags=["agent"])
+@app.post("/draft/stream", tags=["agent"], dependencies=[Depends(rate_limited)])
 def draft_stream(
     req: DraftRequest,
     user: UserClaims = Depends(get_current_user),
@@ -617,11 +690,7 @@ def draft_stream(
         credential=DefaultAzureCredential(),
     )
     rfp_container = blob_service.get_container_client(settings.storage_rfp_container)
-    blobs = list(rfp_container.list_blobs(name_starts_with=f"{req.rfp_id}/"))
-    if not blobs:
-        raise HTTPException(status_code=404, detail=f"No RFP found for id {req.rfp_id}")
-
-    blob_name = blobs[0].name
+    blob_name = require_rfp_access(rfp_container, req.rfp_id, user, settings).name
     data = rfp_container.download_blob(blob_name).readall()
     filename = blob_name.rsplit("/", 1)[-1]
 
@@ -809,7 +878,7 @@ class GenerateSectionRequest(BaseModel):
     tone: str = "professional"
 
 
-@app.post("/draft/generate-section", tags=["agent"])
+@app.post("/draft/generate-section", tags=["agent"], dependencies=[Depends(rate_limited)])
 def generate_section(
     req: GenerateSectionRequest,
     user: UserClaims = Depends(get_current_user),
@@ -859,7 +928,7 @@ def generate_section(
 # ── Generate Document from Responses ─────────────────────
 
 
-@app.post("/draft/generate-doc", tags=["agent"])
+@app.post("/draft/generate-doc", tags=["agent"], dependencies=[Depends(rate_limited)])
 def generate_doc(
     req: GenerateDocRequest,
     user: UserClaims = Depends(get_current_user),
@@ -880,6 +949,12 @@ def generate_doc(
     responses = req.responses
     if not responses and not req.section_narratives:
         raise HTTPException(status_code=400, detail="No responses or section narratives provided")
+
+    rfp_container = BlobServiceClient(
+        account_url=settings.azure_storage_account_url,
+        credential=DefaultAzureCredential(),
+    ).get_container_client(settings.storage_rfp_container)
+    require_rfp_access(rfp_container, req.rfp_id, user, settings)
 
     template_sections = parse_template_sections()
     section_names = [s["heading"] for s in template_sections] if template_sections else [
@@ -1023,7 +1098,7 @@ def generate_doc(
 # ── Single Answer ─────────────────────────────────────────
 
 
-@app.post("/answer", tags=["agent"])
+@app.post("/answer", tags=["agent"], dependencies=[Depends(rate_limited)])
 def answer(
     req: AnswerRequest,
     user: UserClaims = Depends(get_current_user),
@@ -1052,21 +1127,35 @@ def answer(
 # ── KB Ingest ─────────────────────────────────────────────
 
 
-@app.post("/kb/ingest", tags=["knowledge-base"])
+@app.post("/kb/ingest", tags=["knowledge-base"], dependencies=[Depends(rate_limited)])
 def kb_ingest(
     req: IngestRequest,
     user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ):
-    """Ingest a knowledge-base document from Blob → AI Search index."""
+    """Re-ingest a KB document from Blob → AI Search. Only its owner (or an administrator) can.
+
+    Who can retrieve the indexed chunks comes from the blob's recorded owner and shared groups,
+    never from the request. An administrator ingesting a document that has no recorded owner
+    becomes its owner.
+    """
     from app.ingestion.kb_ingest import ingest_blob
 
+    container = _container(settings, settings.storage_kb_container)
+    acl = _load_kb_document(container, req.blob_name, user, settings)
+    _require_kb_manage(acl, req.blob_name, user, settings)
+    if acl is None:
+        acl = KbAcl(owner=user.oid)
+        container.get_blob_client(req.blob_name).set_blob_metadata(kb_metadata(acl.owner, acl.groups))
+
+    client_id, project_id, solution_area, _ = req.blob_name.split("/")
     count = ingest_blob(
         blob_name=req.blob_name,
-        client_id=req.client_id,
-        project_id=req.project_id,
-        solution_area=req.solution_area,
-        oids=req.oids or [user.oid],
-        groups=req.groups or user.groups,
+        client_id=client_id,
+        project_id=project_id,
+        solution_area=solution_area,
+        oids=[acl.owner],
+        groups=list(acl.groups),
         redaction_level=req.redaction_level,
     )
     return {"indexed_chunks": count, "blob_name": req.blob_name}
@@ -1077,20 +1166,17 @@ def kb_ingest(
 
 @app.get("/outputs/{rfp_id}/{filename}", tags=["outputs"])
 def download_output(
-    rfp_id: str,
-    filename: str,
+    rfp_id: RfpId,
+    filename: Filename,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Download a generated output file (draft.docx or compliance.xlsx)."""
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient
+    """Download a generated output file (draft.docx or compliance.xlsx) of an RFP you own."""
+    if filename not in OUTPUT_FILENAMES:
+        raise HTTPException(status_code=404, detail=f"Output not found: {rfp_id}/{filename}")
+    require_rfp_access(_container(settings, settings.storage_rfp_container), rfp_id, user, settings)
 
-    blob_service = BlobServiceClient(
-        account_url=settings.azure_storage_account_url,
-        credential=DefaultAzureCredential(),
-    )
-    container = blob_service.get_container_client(settings.storage_output_container)
+    container = _container(settings, settings.storage_output_container)
     blob_name = f"{rfp_id}/{filename}"
 
     try:
@@ -1114,38 +1200,37 @@ def download_output(
 # ── KB Upload + Ingest (combined) ─────────────────────────
 
 
-@app.post("/kb/upload", tags=["knowledge-base"])
+@app.post("/kb/upload", tags=["knowledge-base"], dependencies=[Depends(rate_limited)])
 def kb_upload(
     file: UploadFile = File(...),
-    client_id: str = Form("demo-client"),
-    project_id: str = Form("demo-project"),
-    solution_area: str = Form("general"),
+    client_id: Annotated[Segment, Form()] = "demo-client",
+    project_id: Annotated[Segment, Form()] = "demo-project",
+    solution_area: Annotated[Segment, Form()] = "general",
+    share_with_groups: Annotated[str, Form()] = "",
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Upload a reference document, store in Blob, and ingest into the search index."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
+    """Upload a reference document, store in Blob, and ingest into the search index.
 
-    allowed_ext = (".pdf", ".docx")
-    if not any(file.filename.lower().endswith(ext) for ext in allowed_ext):
-        raise HTTPException(status_code=400, detail=f"Only {allowed_ext} files are supported")
-
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient
+    The document is private to the uploader unless ``share_with_groups`` (comma-separated group IDs
+    the uploader belongs to) is given. Uploading again replaces the document and its sharing; only
+    the owner (or an administrator) can replace an existing document.
+    """
+    filename = _validated_upload_filename(file, (".pdf", ".docx"))
+    groups = resolve_share_groups(parse_group_list(share_with_groups), user, settings)
 
     from app.ingestion.kb_ingest import ingest_blob
 
-    blob_name = f"{client_id}/{project_id}/{solution_area}/{file.filename}"
+    blob_name = f"{client_id}/{project_id}/{solution_area}/{filename}"
+    container = _container(settings, settings.storage_kb_container)
 
-    blob_service = BlobServiceClient(
-        account_url=settings.azure_storage_account_url,
-        credential=DefaultAzureCredential(),
-    )
-    container = blob_service.get_container_client(settings.storage_kb_container)
+    exists, existing_acl = _existing_kb_acl(container, blob_name)
+    if exists:
+        _require_kb_manage(existing_acl, blob_name, user, settings)
+    owner = existing_acl.owner if existing_acl else user.oid  # an admin replacing a file keeps its owner
 
-    data = file.file.read()
-    container.upload_blob(name=blob_name, data=data, overwrite=True)
+    data = _read_upload(file, settings)
+    container.upload_blob(name=blob_name, data=data, overwrite=True, metadata=kb_metadata(owner, groups))
     logger.info("Uploaded KB doc %s (%d bytes)", blob_name, len(data))
 
     # Ingest into search index
@@ -1154,18 +1239,19 @@ def kb_upload(
         client_id=client_id,
         project_id=project_id,
         solution_area=solution_area,
-        oids=[user.oid],
-        groups=user.groups,
+        oids=[owner],
+        groups=groups,
     )
 
     return {
         "blob_name": blob_name,
-        "filename": file.filename,
+        "filename": filename,
         "size_bytes": len(data),
         "indexed_chunks": count,
         "client_id": client_id,
         "project_id": project_id,
         "solution_area": solution_area,
+        "shared_with_groups": groups,
     }
 
 
@@ -1174,19 +1260,15 @@ def kb_list(
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """List all documents in the knowledge base blob container."""
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient
-
-    blob_service = BlobServiceClient(
-        account_url=settings.azure_storage_account_url,
-        credential=DefaultAzureCredential(),
-    )
-    container = blob_service.get_container_client(settings.storage_kb_container)
+    """List the knowledge-base documents you own or that are shared with one of your groups."""
+    container = _container(settings, settings.storage_kb_container)
 
     docs = []
     try:
-        for blob in container.list_blobs():
+        for blob in container.list_blobs(include=["metadata"]):
+            acl = parse_kb_acl(blob.metadata)
+            if not can_view_kb(acl, user, settings):
+                continue
             parts = blob.name.split("/")
             docs.append({
                 "blob_name": blob.name,
@@ -1196,6 +1278,9 @@ def kb_list(
                 "solution_area": parts[2] if len(parts) > 3 else "",
                 "size_bytes": blob.size,
                 "last_modified": blob.last_modified.isoformat() if blob.last_modified else "",
+                "owned_by_me": acl is not None and acl.owner == user.oid,
+                "can_delete": can_manage(acl.owner if acl else None, user, settings),
+                "shared_with_groups": list(acl.groups) if acl else [],
             })
     except Exception:
         pass
@@ -1205,22 +1290,27 @@ def kb_list(
 
 @app.delete("/kb/delete", tags=["knowledge-base"])
 def kb_delete(
-    blob_name: str = Query(...),
+    blob_name: Annotated[KbBlobName, Query()],
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Delete a KB document from Blob Storage and remove its chunks from the search index."""
+    """Delete a KB document from Blob Storage and remove its chunks from the search index.
+
+    Only the document's owner (or an administrator) can delete it.
+    """
     import hashlib
 
     from azure.identity import DefaultAzureCredential
     from azure.search.documents import SearchClient
-    from azure.storage.blob import BlobServiceClient
+
+    from app.agents.retrieval import escape_odata_literal
 
     credential = DefaultAzureCredential()
 
+    container = _container(settings, settings.storage_kb_container)
+    _require_kb_manage(_load_kb_document(container, blob_name, user, settings), blob_name, user, settings)
+
     # Delete from blob
-    blob_service = BlobServiceClient(account_url=settings.azure_storage_account_url, credential=credential)
-    container = blob_service.get_container_client(settings.storage_kb_container)
     try:
         container.delete_blob(blob_name)
         logger.info("Deleted blob: %s", blob_name)
@@ -1245,7 +1335,7 @@ def kb_delete(
         source_url = f"{settings.azure_storage_account_url}/{settings.storage_kb_container}/{blob_name}"
         results = search_client.search(
             search_text="*",
-            filter=f"source_url eq '{source_url}'",
+            filter=f"source_url eq '{escape_odata_literal(source_url)}'",
             select=["id"],
             top=1000,
         )
@@ -1270,37 +1360,38 @@ def kb_delete(
     return {"blob_name": blob_name, "deleted_chunks": deleted_chunks}
 
 
-@app.post("/kb/reindex", tags=["knowledge-base"])
+@app.post("/kb/reindex", tags=["knowledge-base"], dependencies=[Depends(rate_limited)])
 def kb_reindex(
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
-    """Re-index all documents in the KB blob container into the search index."""
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient
+    """Re-index every KB document (administrators only).
+
+    Each document keeps the access recorded on its blob (owner and shared groups). Documents with no
+    recorded owner are skipped: ingest one explicitly with POST /kb/ingest to claim it.
+    """
+    require_admin(user, settings)
 
     from app.ingestion.kb_ingest import ingest_blob
 
-    blob_service = BlobServiceClient(
-        account_url=settings.azure_storage_account_url,
-        credential=DefaultAzureCredential(),
-    )
-    container = blob_service.get_container_client(settings.storage_kb_container)
+    container = _container(settings, settings.storage_kb_container)
 
     results = []
-    for blob in container.list_blobs():
+    for blob in container.list_blobs(include=["metadata"]):
+        acl = parse_kb_acl(blob.metadata)
         parts = blob.name.split("/")
-        client_id = parts[0] if len(parts) > 1 else "default"
-        project_id = parts[1] if len(parts) > 2 else "default"
-        solution_area = parts[2] if len(parts) > 3 else "general"
+        if acl is None or len(parts) != 4:
+            reason = "no recorded owner" if acl is None else "unexpected blob name"
+            results.append({"blob_name": blob.name, "chunks": 0, "status": f"skipped: {reason}"})
+            continue
         try:
             count = ingest_blob(
                 blob_name=blob.name,
-                client_id=client_id,
-                project_id=project_id,
-                solution_area=solution_area,
-                oids=[user.oid],
-                groups=user.groups,
+                client_id=parts[0],
+                project_id=parts[1],
+                solution_area=parts[2],
+                oids=[acl.owner],
+                groups=list(acl.groups),
             )
             results.append({"blob_name": blob.name, "chunks": count, "status": "ok"})
         except Exception as exc:
@@ -1314,24 +1405,20 @@ def kb_reindex(
 # ── Template Upload ───────────────────────────────────────
 
 
-@app.post("/template/upload", tags=["template"])
+@app.post("/template/upload", tags=["template"], dependencies=[Depends(rate_limited)])
 def template_upload(
     file: UploadFile = File(...),
     user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ):
-    """Upload a custom DOCX template for RFP response generation."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
+    """Upload the DOCX template used for every RFP response (administrators only: it is shared)."""
+    require_admin(user, settings)
+    filename = _validated_upload_filename(file, (".docx", ".doc"))
 
-    lower = file.filename.lower()
-    if not (lower.endswith(".docx") or lower.endswith(".doc")):
-        raise HTTPException(status_code=400, detail="Only .docx or .doc template files are supported")
+    template_path = _TEMPLATE_PATH
+    template_path.parent.mkdir(parents=True, exist_ok=True)
 
-    template_dir = Path(__file__).resolve().parent.parent / "templates"
-    template_dir.mkdir(parents=True, exist_ok=True)
-    template_path = template_dir / "rfp_response_template.docx"
-
-    data = file.file.read()
+    data = _read_upload(file, settings)
 
     # Validate the file is actually a valid DOCX (ZIP-based)
     format_warning = None
@@ -1348,14 +1435,14 @@ def template_upload(
             format_warning = "This file does not appear to be a valid Word document."
 
     template_path.write_bytes(data)
-    logger.info("Template uploaded: %s (%d bytes) → %s", file.filename, len(data), template_path)
+    logger.info("Template uploaded: %s (%d bytes) → %s", filename, len(data), template_path)
 
     # Parse sections from the uploaded template
     from app.outputs.docx_writer import parse_template_sections
     sections = parse_template_sections(template_path)
 
     result = {
-        "filename": file.filename,
+        "filename": filename,
         "size_bytes": len(data),
         "sections": sections,
         "message": "Template saved. It will be used for all future draft generations.",
@@ -1370,7 +1457,7 @@ def template_info():
     """Check whether a custom template is loaded and return its sections."""
     from app.outputs.docx_writer import parse_template_sections
 
-    template_path = Path(__file__).resolve().parent.parent / "templates" / "rfp_response_template.docx"
+    template_path = _TEMPLATE_PATH
     if template_path.exists():
         stat = template_path.stat()
         sections = parse_template_sections(template_path)

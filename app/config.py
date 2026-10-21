@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     entra_client_id: str = Field("", alias="ENTRA_CLIENT_ID")
     entra_audience: str = Field("", alias="ENTRA_AUDIENCE")
 
+    # ── Authorisation and limits ──────────────────────────
+    # Comma-separated object IDs of users who can manage every RFP and KB document.
+    # When AUTH_MODE=disabled everyone is treated as an administrator.
+    admin_oids: str = Field("", alias="ADMIN_OIDS")
+    max_upload_mb: int = Field(25, alias="MAX_UPLOAD_MB", ge=1)
+    # Requests per user per minute on the expensive endpoints (0 disables the limit).
+    rate_limit_per_minute: int = Field(60, alias="RATE_LIMIT_PER_MINUTE", ge=0)
+
     # ── Optional ──────────────────────────────────────────
     embedding_model_deployment_name: str = Field(
         "text-embedding-3-large", alias="EMBEDDING_MODEL_DEPLOYMENT_NAME"
@@ -66,6 +74,10 @@ class Settings(BaseSettings):
                 "ENTRA_TENANT_ID=dev is no longer supported."
             )
         return self
+
+    @property
+    def admin_oid_set(self) -> frozenset[str]:
+        return frozenset(oid.strip() for oid in self.admin_oids.split(",") if oid.strip())
 
 
 _settings: Settings | None = None
