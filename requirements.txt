@@ -69,7 +69,7 @@ cryptography==50.0.2
     #   pyjwt
 et-xmlfile==2.0.0
     # via openpyxl
-fastapi==0.143.0
+fastapi==0.144.0
     # via -r requirements.in
 h11==0.16.0
     # via
