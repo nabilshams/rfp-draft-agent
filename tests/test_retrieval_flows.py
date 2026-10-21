@@ -24,10 +24,13 @@ def doc(title, url, content=None):
 @pytest.fixture
 def agent(monkeypatch):
     """A scripted agent: records prompts, answers with whatever `respond(prompt)` returns."""
-    state = SimpleNamespace(prompts=[], annotation_urls=set(), respond=lambda prompt: "{}", status="completed")
+    state = SimpleNamespace(
+        prompts=[], web_search=[], annotation_urls=set(), respond=lambda prompt: "{}", status="completed"
+    )
 
-    def fake_run(agent_id, content):
+    def fake_run(agent_id, content, *, web_search=False):
         state.prompts.append(content)
+        state.web_search.append(web_search)
         return foundry_agent.AgentRunResult(
             status=state.status,
             run_id="run-1",

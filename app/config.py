@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # Requests per user per minute on the expensive endpoints (0 disables the limit).
     rate_limit_per_minute: int = Field(60, alias="RATE_LIMIT_PER_MINUTE", ge=0)
 
+    # ── Guardrails ────────────────────────────────────────
+    # Customer names to redact from inputs, knowledge-base documents and generated output, separated by ";".
+    # Kept in the environment (a secret in Azure), never in the repository.
+    redaction_customer_names: str = Field("", alias="REDACTION_CUSTOMER_NAMES")
+    # Resource ID of a Grounding-with-Bing connection. Web search is only available when this is set AND a
+    # request opts in with allow_web_search; text sent to Bing leaves the Azure compliance boundary.
+    bing_connection_id: str = Field("", alias="BING_CONNECTION_ID")
+
     # ── Knowledge-base retrieval ──────────────────────────
     search_top_k: int = Field(5, alias="SEARCH_TOP_K", ge=1, le=20)  # documents retrieved per query
     # Documents scoring below this are dropped. Uses the semantic reranker score (0-4) when the

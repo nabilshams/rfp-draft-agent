@@ -44,6 +44,7 @@
     .spinner{display:inline-block;width:14px;height:14px;border:2px solid #ccc;border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     .loading{display:none;align-items:center;gap:7px;padding:10px 14px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;margin-top:10px;font-size:12px} .loading.visible{display:flex}
+    .web-opt{font-size:12px;margin:8px 0;font-weight:500} .web-opt input{width:auto;margin-right:6px} .web-note{display:block;font-weight:400;font-size:11px;color:var(--text-muted);margin-left:22px}
     .toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;color:#fff;z-index:1000;transform:translateY(80px);opacity:0;transition:.3s}
     .toast.visible{transform:translateY(0);opacity:1} .toast.success{background:var(--success)} .toast.error{background:var(--error)}
     .download-links{display:flex;gap:10px;margin-top:14px}
@@ -157,6 +158,7 @@
         <div style="flex:1"><label>Tone</label><select id="draftTone"><option value="professional">Professional</option><option value="formal">Formal</option><option value="concise">Concise</option><option value="technical">Technical</option></select></div>
         <button class="btn btn-primary" id="btnDraft">Generate Responses</button>
       </div>
+      <label id="draftWebRow" class="web-opt" style="display:none"><input type="checkbox" id="draftWebSearch"> Allow web search (Bing) <span class="web-note">The text of each requirement is sent to Bing, outside the Azure compliance boundary. Leave off for confidential RFPs.</span></label>
       <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Uses the approach configured in the <strong>Response Template</strong> tab. Current: <span id="currentApproachLabel">Per Requirement</span></p>
       <div class="loading" id="draftLoading"><div class="spinner"></div><span>Generating RFP response... This may take 1-2 minutes.</span></div>
     </div>
@@ -272,6 +274,7 @@
         <div><label>Project ID</label><input type="text" id="askProjectId" value="demo-project"></div>
         <div><label>Solution Area</label><input type="text" id="askSolutionArea" value="general"></div>
       </div>
+      <label id="askWebRow" class="web-opt" style="display:none"><input type="checkbox" id="askWebSearch"> Allow web search (Bing) <span class="web-note">The question is sent to Bing, outside the Azure compliance boundary.</span></label>
       <button class="btn btn-primary" id="btnAsk">Ask Agent</button>
       <div class="loading" id="askLoading"><div class="spinner"></div><span>Querying agent...</span></div>
       <div id="answerBox" style="display:none;margin-top:14px"><h3>Answer</h3><div class="result-box" id="answerText"></div><h3>Full Response</h3><div class="result-box"><pre id="answerJson"></pre></div></div>
@@ -308,7 +311,7 @@ function respDomId(id){return 'resp-' + encodeURIComponent(normReqId(id))}
 function blockDomId(id){return 'req-block-' + encodeURIComponent(normReqId(id))}
 document.querySelectorAll('.tab').forEach(tab=>{tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));tab.classList.add('active');document.getElementById('tab-'+tab.dataset.tab).classList.add('active');if(tab.dataset.tab==='dashboard')loadDashboard();if(tab.dataset.tab==='logs')connectLogWs();if(tab.dataset.tab==='template')loadTemplateInfo();if(tab.dataset.tab==='kb')loadKbList()})});
 function toast(msg,type='success'){const el=document.getElementById('toast');el.textContent=msg;el.className='toast '+type+' visible';setTimeout(()=>el.classList.remove('visible'),3500)}
-async function checkHealth(){try{const r=await fetch(API+'/health');await r.json();document.getElementById('statusDot').classList.remove('offline');document.getElementById('statusText').textContent='Connected'}catch{document.getElementById('statusDot').classList.add('offline');document.getElementById('statusText').textContent='Offline'}}checkHealth();setInterval(checkHealth,30000);
+async function checkHealth(){try{const r=await fetch(API+'/health');const h=await r.json();for(const id of ['draftWebRow','askWebRow'])document.getElementById(id).style.display=h.web_search_available?'block':'none';document.getElementById('statusDot').classList.remove('offline');document.getElementById('statusText').textContent='Connected'}catch{document.getElementById('statusDot').classList.add('offline');document.getElementById('statusText').textContent='Offline'}}checkHealth();setInterval(checkHealth,30000);
 function escHtml(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
 function setupDragDrop(zId,iId,cb){const z=document.getElementById(zId),i=document.getElementById(iId);z.addEventListener('click',()=>i.click());z.addEventListener('dragover',e=>{e.preventDefault();z.classList.add('dragover')});z.addEventListener('dragleave',()=>z.classList.remove('dragover'));z.addEventListener('drop',e=>{e.preventDefault();z.classList.remove('dragover');if(e.dataTransfer.files.length){i.files=e.dataTransfer.files;cb(i.files)}});i.addEventListener('change',()=>{if(i.files.length)cb(i.files)})}
 
@@ -475,6 +478,7 @@ document.getElementById('btnDraft').addEventListener('click', async () => {
     tone: document.getElementById('draftTone').value,
     approach: selectedApproach,
     context: document.getElementById('draftContext').value.trim(),
+    allow_web_search: document.getElementById('draftWebSearch').checked,
     requirements: extractedRequirements
   });
 
@@ -1077,7 +1081,7 @@ document.getElementById('btnTplUpload').addEventListener('click',async()=>{
 });
 
 // Ask
-document.getElementById('btnAsk').addEventListener('click',async()=>{const q=document.getElementById('askQuestion').value.trim();if(!q)return toast('Enter a question','error');const ld=document.getElementById('askLoading'),btn=document.getElementById('btnAsk');ld.classList.add('visible');btn.disabled=true;try{const r=await fetch(API+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,client_id:document.getElementById('askClientId').value,project_id:document.getElementById('askProjectId').value,solution_area:document.getElementById('askSolutionArea').value})});if(!r.ok)throw new Error(await r.text());const data=await r.json();document.getElementById('answerBox').style.display='block';document.getElementById('answerText').textContent=data.answer_markdown||data.raw_response||JSON.stringify(data);document.getElementById('answerJson').textContent=JSON.stringify(data,null,2);toast('Answer received!')}catch(err){toast('Error: '+err.message,'error')}finally{ld.classList.remove('visible');btn.disabled=false}});
+document.getElementById('btnAsk').addEventListener('click',async()=>{const q=document.getElementById('askQuestion').value.trim();if(!q)return toast('Enter a question','error');const ld=document.getElementById('askLoading'),btn=document.getElementById('btnAsk');ld.classList.add('visible');btn.disabled=true;try{const r=await fetch(API+'/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,client_id:document.getElementById('askClientId').value,project_id:document.getElementById('askProjectId').value,solution_area:document.getElementById('askSolutionArea').value,allow_web_search:document.getElementById('askWebSearch').checked})});if(!r.ok)throw new Error(await r.text());const data=await r.json();document.getElementById('answerBox').style.display='block';document.getElementById('answerText').textContent=data.answer_markdown||data.raw_response||JSON.stringify(data);document.getElementById('answerJson').textContent=JSON.stringify(data,null,2);toast('Answer received!')}catch(err){toast('Error: '+err.message,'error')}finally{ld.classList.remove('visible');btn.disabled=false}});
 
 // Dashboard
 async function loadDashboard(){try{const[health,metrics]=await Promise.all([fetch(API+'/health').then(r=>r.json()),fetch(API+'/metrics').then(r=>r.json())]);document.getElementById('healthResult').innerHTML='<pre>'+JSON.stringify(health,null,2)+'</pre>';const grid=document.getElementById('metricsGrid');grid.innerHTML='';const labels={rfp_uploads:'RFP Uploads',extractions:'Extractions',drafts:'Drafts',answers:'Answers',redaction_blocks:'Redactions'};for(const[k,l]of Object.entries(labels))grid.innerHTML+='<div class="metric-card"><div class="value">'+(metrics[k]??0)+'</div><div class="label">'+l+'</div></div>'}catch(err){document.getElementById('healthResult').innerHTML='<pre style="color:var(--error)">'+err.message+'</pre>'}}

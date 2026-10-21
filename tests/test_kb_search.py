@@ -119,6 +119,16 @@ class TestSearchKb:
             "reranker_score": 2.5,
         }
 
+    def test_retrieved_chunks_are_redacted_but_their_urls_are_not(self, search):
+        # Chunks were redacted at ingestion, but rules and customer names added since must still apply.
+        url = "https://kb/acme/p1/cloud/guide.pdf"
+        search(FakeSearchClient([hit(title="Pricing", url=url, content="We charge $1,250 per seat; call 555-123-4567.")]))
+
+        (doc,) = kb_search.search_kb(query="q", **ACCESS)
+
+        assert doc["content"] == "We charge [REDACTED-PRICE] per seat; call [REDACTED-PHONE]."
+        assert doc["source_url"] == url  # must stay exact so the citation check still recognises it
+
     def test_the_minimum_score_uses_the_reranker_score_when_there_is_one(self, search):
         results = [
             hit(title="strong", score=0.01, reranker=3.1),
@@ -231,8 +241,9 @@ class TestMergeAndFormat:
 
     def test_sources_are_listed_with_their_urls_and_truncated_content(self):
         block = kb_search.format_context([{"title": "Guide", "source_url": "https://kb/g.pdf", "content": "x" * 3000}])
-        assert "### KB Source 1: Guide" in block
-        assert "**URL:** https://kb/g.pdf" in block
+        assert "### KB Source 1" in block
+        assert "Title: Guide" in block
+        assert "URL: https://kb/g.pdf" in block
         assert block.count("x") == 1500
 
     def test_retrieved_context_exposes_the_citable_urls(self):

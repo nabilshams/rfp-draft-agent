@@ -30,7 +30,9 @@ from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorFilterMode, VectorizedQuery
 
 from app.agents.retrieval import build_odata_filter
+from app.agents.untrusted import fence
 from app.config import Settings, get_settings
+from app.ingestion.redaction import get_redaction_engine
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +175,13 @@ def search_kb(
             else:
                 raise
 
+    # Redact at retrieval as well as at ingestion: rules and customer names added after a document was
+    # indexed then still apply to it. The URL is left exactly as stored so it can still be cited.
+    engine = get_redaction_engine()
     docs = [
         {
-            "content": r.get("content", ""),
-            "title": r.get("title", ""),
+            "content": engine.redact(r.get("content", "")).sanitized_text,
+            "title": engine.redact(r.get("title", "")).sanitized_text,
             "source_url": r.get("source_url", ""),
             "score": r.get("@search.score", 0),
             "reranker_score": r.get("@search.reranker_score"),
@@ -231,9 +236,9 @@ def format_context(docs: list[dict[str, Any]]) -> str:
         )
     parts = ["## Internal Knowledge Base Sources\n"]
     for i, doc in enumerate(docs, 1):
-        parts.append(f"### KB Source {i}: {doc.get('title', '')}")
-        parts.append(f"**URL:** {doc.get('source_url', '')}")
-        parts.append(f"**Content:**\n{doc.get('content', '')[:_MAX_DOC_CHARS]}\n")
+        # Documents come from uploads, so their text is fenced as data (see app.agents.untrusted).
+        body = f"Title: {doc.get('title', '')}\nURL: {doc.get('source_url', '')}\n\n{doc.get('content', '')[:_MAX_DOC_CHARS]}"
+        parts.append(f"### KB Source {i}\n{fence('KB-SOURCE', body)}\n")
     return "\n".join(parts)
 
 
