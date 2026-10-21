@@ -38,4 +38,4 @@ pyyaml>=6.0.2
 python-dotenv>=1.0.1
 httpx>=0.28.0
 tiktoken>=0.8.0
-openai>=1.50.0
+openai>=3.35.1
