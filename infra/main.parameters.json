@@ -15,6 +15,7 @@
     "adminOids": { "value": "${ADMIN_OIDS=}" },
     "bingConnectionId": { "value": "${BING_CONNECTION_ID=}" },
     "redactionCustomerNames": { "value": "${REDACTION_CUSTOMER_NAMES=}" },
-    "allowedIpRanges": { "value": "${ALLOWED_IP_RANGES=}" }
+    "allowedIpRanges": { "value": "${ALLOWED_IP_RANGES=}" },
+    "alertEmail": { "value": "${ALERT_EMAIL=}" }
   }
 }

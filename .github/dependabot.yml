@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # requirements.txt is generated from requirements.in (see "Dependencies" in the README); Dependabot
+  # understands the pair and proposes updates to both.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      azure-sdk:
+        patterns: ["azure-*", "openai"]
+      opentelemetry:
+        patterns: ["opentelemetry-*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

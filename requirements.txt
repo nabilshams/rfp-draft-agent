@@ -1,41 +1,322 @@
-# Azure AI Foundry Agent SDK
-azure-ai-projects>=1.0.0b5
-azure-ai-agents>=1.1.0
-azure-ai-inference>=1.0.0b7
-azure-identity>=1.19.0
-
-# Azure AI Search
-azure-search-documents>=11.6.0b8
-
-# Azure Storage
-azure-storage-blob>=12.24.0
-
-# FastAPI
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-python-multipart>=0.0.17
-
-# Document processing
-pypdf2>=3.0.1
-python-docx>=1.1.2
-openpyxl>=3.1.5
-
-# Telemetry
-opentelemetry-api>=1.29.0
-opentelemetry-sdk>=1.29.0
-opentelemetry-instrumentation-fastapi>=0.50b0
-azure-monitor-opentelemetry>=1.6.4
-azure-monitor-opentelemetry-exporter>=1.0.0b31
-
-# Auth
-pyjwt[crypto]>=2.10.0
-cryptography>=44.0.0
-
-# Utilities
-pydantic>=2.10.0
-pydantic-settings>=2.7.0
-pyyaml>=6.0.2
-python-dotenv>=1.0.1
-httpx>=0.28.0
-tiktoken>=0.8.0
-openai>=1.50.0
+annotated-doc==0.0.5
+    # via fastapi
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.15.1
+    # via
+    #   httpx
+    #   httpx2
+    #   openai
+    #   starlette
+    #   watchfiles
+asgiref==3.12.1
+    # via opentelemetry-instrumentation-asgi
+azure-ai-agents==1.1.0
+    # via -r requirements.in
+azure-ai-inference==1.0.0b9
+    # via -r requirements.in
+azure-ai-projects==2.9.0
+    # via -r requirements.in
+azure-core==1.41.0
+    # via
+    #   azure-ai-agents
+    #   azure-ai-inference
+    #   azure-ai-projects
+    #   azure-core-tracing-opentelemetry
+    #   azure-identity
+    #   azure-monitor-opentelemetry
+    #   azure-monitor-opentelemetry-exporter
+    #   azure-search-documents
+    #   azure-storage-blob
+    #   msrest
+azure-core-tracing-opentelemetry==1.0.0b13
+    # via azure-monitor-opentelemetry
+azure-identity==1.26.0
+    # via
+    #   -r requirements.in
+    #   azure-ai-projects
+    #   azure-monitor-opentelemetry-exporter
+azure-monitor-opentelemetry==1.8.11
+    # via -r requirements.in
+azure-monitor-opentelemetry-exporter==1.0.0b58
+    # via
+    #   -r requirements.in
+    #   azure-monitor-opentelemetry
+azure-search-documents==12.1.0b2
+    # via -r requirements.in
+azure-storage-blob==12.31.0
+    # via
+    #   -r requirements.in
+    #   azure-ai-projects
+certifi==2026.10.19
+    # via
+    #   httpcore
+    #   httpx
+    #   msrest
+    #   requests
+cffi==2.1.1 ; platform_python_implementation != 'PyPy'
+    # via cryptography
+charset-normalizer==3.5.2
+    # via requests
+click==8.5.0
+    # via uvicorn
+cryptography==50.0.2
+    # via
+    #   -r requirements.in
+    #   azure-identity
+    #   azure-storage-blob
+    #   msal
+    #   pyjwt
+et-xmlfile==2.0.0
+    # via openpyxl
+fastapi==0.143.0
+    # via -r requirements.in
+h11==0.16.0
+    # via
+    #   httpcore
+    #   httpcore2
+    #   uvicorn
+httpcore==1.0.9
+    # via httpx
+httpcore2==2.13.1 ; sys_platform != 'emscripten'
+    # via httpx2
+httptools==0.9.0
+    # via uvicorn
+httpx==0.28.1
+    # via -r requirements.in
+httpx2==2.13.1
+    # via openai
+httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
+    # via httpx2
+idna==3.20
+    # via
+    #   anyio
+    #   httpx
+    #   httpx2
+    #   requests
+isodate==0.7.2
+    # via
+    #   azure-ai-agents
+    #   azure-ai-inference
+    #   azure-ai-projects
+    #   azure-search-documents
+    #   azure-storage-blob
+    #   msrest
+jiter==0.17.0
+    # via openai
+lxml==6.1.3
+    # via python-docx
+msal==1.39.0
+    # via
+    #   azure-identity
+    #   msal-extensions
+msal-extensions==1.3.1
+    # via azure-identity
+msrest==0.7.1
+    # via azure-monitor-opentelemetry-exporter
+oauthlib==4.0.0
+    # via requests-oauthlib
+openai==3.31.0
+    # via
+    #   -r requirements.in
+    #   azure-ai-projects
+openpyxl==3.1.5
+    # via -r requirements.in
+opentelemetry-api==1.45.1
+    # via
+    #   -r requirements.in
+    #   azure-core-tracing-opentelemetry
+    #   azure-monitor-opentelemetry-exporter
+    #   fastapi
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-dbapi
+    #   opentelemetry-instrumentation-django
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-flask
+    #   opentelemetry-instrumentation-httpx
+    #   opentelemetry-instrumentation-logging
+    #   opentelemetry-instrumentation-psycopg2
+    #   opentelemetry-instrumentation-requests
+    #   opentelemetry-instrumentation-urllib
+    #   opentelemetry-instrumentation-urllib3
+    #   opentelemetry-instrumentation-wsgi
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-instrumentation==0.66b1
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-dbapi
+    #   opentelemetry-instrumentation-django
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-flask
+    #   opentelemetry-instrumentation-httpx
+    #   opentelemetry-instrumentation-logging
+    #   opentelemetry-instrumentation-psycopg2
+    #   opentelemetry-instrumentation-requests
+    #   opentelemetry-instrumentation-urllib
+    #   opentelemetry-instrumentation-urllib3
+    #   opentelemetry-instrumentation-wsgi
+    #   opentelemetry-resource-detector-azure
+opentelemetry-instrumentation-asgi==0.66b1
+    # via opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-dbapi==0.66b1
+    # via opentelemetry-instrumentation-psycopg2
+opentelemetry-instrumentation-django==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-fastapi==0.66b1
+    # via
+    #   -r requirements.in
+    #   azure-monitor-opentelemetry
+opentelemetry-instrumentation-flask==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-httpx==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-logging==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-psycopg2==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-requests==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-urllib==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-urllib3==0.66b1
+    # via azure-monitor-opentelemetry
+opentelemetry-instrumentation-wsgi==0.66b1
+    # via
+    #   opentelemetry-instrumentation-django
+    #   opentelemetry-instrumentation-flask
+opentelemetry-resource-detector-azure==0.3.0
+    # via azure-monitor-opentelemetry
+opentelemetry-sdk==1.45.1
+    # via
+    #   -r requirements.in
+    #   azure-monitor-opentelemetry
+    #   azure-monitor-opentelemetry-exporter
+    #   opentelemetry-resource-detector-azure
+opentelemetry-semantic-conventions==0.66b1
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-dbapi
+    #   opentelemetry-instrumentation-django
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-flask
+    #   opentelemetry-instrumentation-httpx
+    #   opentelemetry-instrumentation-logging
+    #   opentelemetry-instrumentation-requests
+    #   opentelemetry-instrumentation-urllib
+    #   opentelemetry-instrumentation-urllib3
+    #   opentelemetry-instrumentation-wsgi
+    #   opentelemetry-sdk
+opentelemetry-util-http==0.66b1
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-django
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-flask
+    #   opentelemetry-instrumentation-httpx
+    #   opentelemetry-instrumentation-requests
+    #   opentelemetry-instrumentation-urllib
+    #   opentelemetry-instrumentation-urllib3
+    #   opentelemetry-instrumentation-wsgi
+packaging==26.3
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-flask
+psutil==7.2.2
+    # via azure-monitor-opentelemetry-exporter
+pycparser==3.11 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+    # via cffi
+pydantic==2.14.1
+    # via
+    #   -r requirements.in
+    #   fastapi
+    #   openai
+    #   pydantic-settings
+pydantic-core==2.50.1
+    # via pydantic
+pydantic-settings==2.15.0
+    # via -r requirements.in
+pyjwt==2.15.1
+    # via
+    #   -r requirements.in
+    #   msal
+pypdf2==3.0.1
+    # via -r requirements.in
+python-docx==1.2.0
+    # via -r requirements.in
+python-dotenv==1.2.4
+    # via
+    #   -r requirements.in
+    #   pydantic-settings
+    #   uvicorn
+python-multipart==0.0.32
+    # via -r requirements.in
+pyyaml==6.0.3
+    # via
+    #   -r requirements.in
+    #   uvicorn
+regex==2026.9.29
+    # via tiktoken
+requests==2.34.2
+    # via
+    #   azure-core
+    #   msal
+    #   msrest
+    #   requests-oauthlib
+    #   tiktoken
+requests-oauthlib==2.0.0
+    # via msrest
+sniffio==1.3.1
+    # via openai
+starlette==1.8.0
+    # via fastapi
+tiktoken==0.14.0
+    # via -r requirements.in
+truststore==0.10.5 ; sys_platform != 'emscripten'
+    # via
+    #   httpcore2
+    #   httpx2
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   azure-ai-agents
+    #   azure-ai-inference
+    #   azure-ai-projects
+    #   azure-core
+    #   azure-identity
+    #   azure-search-documents
+    #   azure-storage-blob
+    #   fastapi
+    #   httpx2
+    #   openai
+    #   opentelemetry-api
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pydantic
+    #   pydantic-core
+    #   python-docx
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via
+    #   fastapi
+    #   pydantic
+    #   pydantic-settings
+urllib3==2.8.0
+    # via requests
+uvicorn==0.54.0
+    # via -r requirements.in
+uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+    # via uvicorn
+watchfiles==1.3.0
+    # via uvicorn
+websockets==17.2
+    # via uvicorn
+wrapt==2.5.1
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-dbapi
+    #   opentelemetry-instrumentation-httpx
+    #   opentelemetry-instrumentation-urllib3

@@ -14,3 +14,10 @@ services:
       context: .
       # Build in Azure Container Registry so Docker isn't required locally.
       remoteBuild: true
+
+hooks:
+  # Prints a warning (never fails the deployment) when the app is open to the internet without authentication.
+  postprovision:
+    shell: sh
+    run: python3 scripts/check_exposure.py || python scripts/check_exposure.py
+    continueOnError: true
