@@ -59,7 +59,8 @@ class FakeContainer:
         return FakeBlobClient(self, name)
 
     def upload_blob(self, name, data, overwrite=False, metadata=None):
-        self.blobs[name] = FakeBlob(name, bytes(data), metadata)
+        payload = data.encode() if isinstance(data, str) else bytes(data)
+        self.blobs[name] = FakeBlob(name, payload, metadata)
 
     def download_blob(self, name):
         blob = self.blobs.get(name)

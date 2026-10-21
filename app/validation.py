@@ -17,6 +17,7 @@ from pydantic import AfterValidator
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")
 _RFP_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _TONE_RE = re.compile(r"^[A-Za-z][A-Za-z -]{0,29}$")
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _MAX_FILENAME_LENGTH = 200
 
 # The only files /draft produces; downloads are limited to these names.
@@ -42,6 +43,12 @@ def check_tone(value: str) -> str:
     """The writing tone goes into prompts, so it must be a short phrase, not free text."""
     if not _TONE_RE.fullmatch(value):
         raise ValueError("must be 1-30 letters, spaces or hyphens")
+    return value
+
+
+def check_job_id(value: str) -> str:
+    if not _JOB_ID_RE.fullmatch(value):
+        raise ValueError("must be a 32-character job id")
     return value
 
 
@@ -73,5 +80,6 @@ def check_kb_blob_name(value: str) -> str:
 Segment = Annotated[str, AfterValidator(check_segment)]
 RfpId = Annotated[str, AfterValidator(check_rfp_id)]
 Tone = Annotated[str, AfterValidator(check_tone)]
+JobId = Annotated[str, AfterValidator(check_job_id)]
 Filename = Annotated[str, AfterValidator(check_filename)]
 KbBlobName = Annotated[str, AfterValidator(check_kb_blob_name)]

@@ -25,6 +25,8 @@ from app import logging_setup
 from app.auth.entra import log_auth_mode
 from app.config import get_settings
 from app.routers import draft, kb, ops, outputs, rfp, template
+from app.routers import jobs as jobs_router
+from app.services import jobs
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ async def lifespan(app: FastAPI):
     logger.info("RFP Draft Agent started")
     yield
     logger.info("RFP Draft Agent shutting down")
+    jobs.shutdown()
     logging_setup.set_main_loop(None)
 
 
@@ -61,7 +64,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for module in (ops, rfp, draft, kb, outputs, template):
+for module in (ops, rfp, draft, jobs_router, kb, outputs, template):
     app.include_router(module.router)
 
 # The UI only runs scripts served from /static (it has no inline handlers), so an injected script
