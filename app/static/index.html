@@ -675,6 +675,7 @@ function renderSingleResponse(resp) {
     '</div>' +
     '<div style="font-size:12px;line-height:1.6;margin-bottom:6px">' + escHtml(resp.answer_markdown || '') + '</div>' +
     (evHtml ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evHtml + '</ul></div>' : '') +
+    (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
     assumeHtml + riskHtml;
 
   // Scroll to this requirement
@@ -724,6 +725,7 @@ function showResults(data){
       '</div>' +
       '<div style="font-size:12px;line-height:1.6;margin-bottom:6px">'+escHtml(resp.answer_markdown||'')+'</div>' +
       (evHtml ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">'+evHtml+'</ul></div>' : '') +
+      (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
       assumeHtml + riskHtml;
   });
 

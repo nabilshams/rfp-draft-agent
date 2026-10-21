@@ -107,6 +107,10 @@ cp .env.example .env
 | `PARALLELISM` | Number of Uvicorn worker processes when running via `python -m app.main` (default: `1`) |
 | `SECTION_PARALLELISM` | Number of sections synthesized concurrently in `per_section` and map-reduce phase 2 (default: `1`) |
 | `RUN_TIMEOUT_SECONDS` | Longest a single agent run may take before it is cancelled and reported as `timed_out` (default: `600`) |
+| `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
+| `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything) |
+| `SEARCH_SEMANTIC_RANKER` | Re-rank results with Azure AI Search's semantic ranker. A metered feature that needs the Basic tier or above; off by default (default: `false`) |
+| `SEARCH_MAX_CONTEXT_DOCS` | Cap on documents shared by many requirements in one prompt: full drafts and section narratives (default: `15`) |
 | `ADMIN_OIDS` | Comma-separated object IDs of administrators (see [Access model](#access-model)); empty by default |
 | `MAX_UPLOAD_MB` | Largest accepted upload (default: `25`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-user requests per minute on the expensive endpoints (default: `60`, `0` = off) |
@@ -367,6 +371,37 @@ from `azd env get-values` into `.env`.
 
 ---
 
+## Retrieval and citations
+
+**How context is retrieved.** Each requirement (or question) is searched on its own, so it is grounded on the
+documents that match *its* text, not a shared sample of the RFP. A search is *hybrid*: a keyword query and a
+vector query over the chunk embeddings, fused by Azure AI Search. The vector part uses `preFilter`, so the
+segmentation and per-user access filters apply before the nearest-neighbour cut-off. All query embeddings are
+computed in one batched call. Section narratives reuse the documents retrieved for their own requirements.
+
+- The optional **semantic ranker** (`SEARCH_SEMANTIC_RANKER=true`) re-ranks results. It is a metered Azure AI
+  Search feature, so it is off by default; the index already defines the `default` semantic configuration.
+- Retrieval **degrades instead of failing a draft**: without embeddings it falls back to keyword search, without
+  the semantic ranker to plain hybrid, and a missing index counts as an empty knowledge base. A single failed
+  search leaves that requirement without evidence (logged as an error); three failures in a row are raised.
+- The index is created or updated automatically before the first ingest in each process, so a fresh deployment
+  needs no manual index setup.
+- Each response carries `kb_evidence_found`. When it is `false`, the prompt tells the model that no internal
+  source matched (it must not cite or invent one), and the UI shows a warning on that requirement.
+
+**Citations are checked.** A model may only cite sources it was given: the retrieved KB documents, plus URLs
+returned by Bing grounding when it is enabled. After every generation (full draft, per-requirement answers,
+section narratives and `/answer`) markdown links to any other URL are reduced to plain text and `evidence`
+entries that cite any other URL are dropped. URLs are compared ignoring a trailing slash and percent-encoding.
+
+**Measuring retrieval quality.** `python scripts/eval_retrieval.py evals/retrieval_cases.example.jsonl
+--client-id <id> --project-id <id> --oid <object id>` runs your own cases (a query plus the documents that
+should come back) in keyword, hybrid and semantic mode and prints hit rate, recall@k and MRR. Searches run with
+the access rights of the user you give, so pick someone who can read the documents the cases refer to. The
+example file only illustrates the format; write cases for your own knowledge base.
+
+---
+
 ## Knowledge Base Guidelines
 
 Following the **"Less is More"** principle:
@@ -444,8 +479,10 @@ rfp-draft-agent/
 │   ├── validation.py              # Checks for ids, file names and blob names
 │   ├── agents/
 │   │   ├── foundry_agent.py       # Foundry agent orchestration
+│   │   ├── kb_search.py           # Hybrid KB search, query embedding, citation checks
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   └── retrieval.py           # DLAC + segmentation query builder
+│   ├── evaluation.py              # Retrieval metrics (hit rate, recall@k, MRR)
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
 │   │   ├── kb_ingest.py           # Blob → chunk → embed → index
@@ -467,7 +504,10 @@ rfp-draft-agent/
 ├── scripts/
 │   ├── create_template.py         # Generate the DOCX template
 │   ├── setup_auth.py              # Create the Entra app registration for Easy Auth (azd)
+│   ├── eval_retrieval.py          # Compare keyword / hybrid / semantic retrieval on your KB
 │   └── demo.py                    # End-to-end demo script
+├── evals/
+│   └── retrieval_cases.example.jsonl   # Example evaluation cases (adapt to your KB)
 ├── tests/
 │   ├── test_redaction.py
 │   ├── test_requirement_extraction.py

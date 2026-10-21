@@ -22,6 +22,10 @@ from azure.search.documents.indexes.models import (
     SearchField,
     SearchFieldDataType,
     SearchIndex,
+    SemanticConfiguration,
+    SemanticField,
+    SemanticPrioritizedFields,
+    SemanticSearch,
     SimpleField,
     VectorSearch,
     VectorSearchProfile,
@@ -80,11 +84,25 @@ def get_index_schema(index_name: str) -> SearchIndex:
         algorithms=[HnswAlgorithmConfiguration(name="default-hnsw")],
     )
 
-    return SearchIndex(name=index_name, fields=fields, vector_search=vector_search)
+    # Used when SEARCH_SEMANTIC_RANKER is on; defining it costs nothing.
+    semantic_search = SemanticSearch(
+        default_configuration_name="default",
+        configurations=[
+            SemanticConfiguration(
+                name="default",
+                prioritized_fields=SemanticPrioritizedFields(
+                    title_field=SemanticField(field_name="title"),
+                    content_fields=[SemanticField(field_name="content")],
+                ),
+            )
+        ],
+    )
+
+    return SearchIndex(name=index_name, fields=fields, vector_search=vector_search, semantic_search=semantic_search)
 
 
 def ensure_index_exists() -> None:
-    """Create the search index if it does not exist."""
+    """Create the search index, or update it to the current definition."""
     settings = get_settings()
     credential = DefaultAzureCredential()
     # Extract the search endpoint from the connection name – in production this
@@ -100,6 +118,25 @@ def ensure_index_exists() -> None:
     index = get_index_schema(settings.ai_search_index_name)
     client.create_or_update_index(index)
     logger.info("Search index '%s' ensured.", settings.ai_search_index_name)
+
+
+_index_ready = False
+
+
+def _ensure_index_once() -> None:
+    """Make sure the index exists before the first ingest in this process.
+
+    Failures are logged and retried on the next ingest, so a role assignment that has not propagated
+    yet, or an index created by hand with a different definition, does not block ingestion.
+    """
+    global _index_ready
+    if _index_ready:
+        return
+    try:
+        ensure_index_exists()
+        _index_ready = True
+    except Exception as exc:
+        logger.warning("Could not create or update the search index (continuing): %s", exc)
 
 
 # ── Chunking ──────────────────────────────────────────────
@@ -177,6 +214,10 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
+# Public name: query embedding in app.agents.kb_search uses the same model as ingestion.
+embed_texts = _embed_texts
+
+
 # ── Main ingest function ─────────────────────────────────
 
 
@@ -197,6 +238,7 @@ def ingest_blob(
     credential = DefaultAzureCredential()
 
     # 1. Download blob
+    _ensure_index_once()
     blob_service = BlobServiceClient(account_url=settings.azure_storage_account_url, credential=credential)
     container = blob_service.get_container_client(settings.storage_kb_container)
     blob_data = container.download_blob(blob_name).readall()

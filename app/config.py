@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     # Requests per user per minute on the expensive endpoints (0 disables the limit).
     rate_limit_per_minute: int = Field(60, alias="RATE_LIMIT_PER_MINUTE", ge=0)
 
+    # ── Knowledge-base retrieval ──────────────────────────
+    search_top_k: int = Field(5, alias="SEARCH_TOP_K", ge=1, le=20)  # documents retrieved per query
+    # Documents scoring below this are dropped. Uses the semantic reranker score (0-4) when the
+    # semantic ranker is on, otherwise the search score. 0 keeps everything.
+    search_min_score: float = Field(0.0, alias="SEARCH_MIN_SCORE", ge=0)
+    # Re-rank with Azure AI Search's semantic ranker (a metered feature; needs the Basic tier or above).
+    search_semantic_ranker: bool = Field(False, alias="SEARCH_SEMANTIC_RANKER")
+    # Cap on documents shared across many requirements in one prompt (full draft, section narratives).
+    search_max_context_docs: int = Field(15, alias="SEARCH_MAX_CONTEXT_DOCS", ge=1, le=50)
+
     # ── Optional ──────────────────────────────────────────
     embedding_model_deployment_name: str = Field(
         "text-embedding-3-large", alias="EMBEDDING_MODEL_DEPLOYMENT_NAME"
