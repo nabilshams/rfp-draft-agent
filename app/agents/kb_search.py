@@ -18,20 +18,18 @@ from __future__ import annotations
 import inspect
 import logging
 import re
-import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorFilterMode, VectorizedQuery
 
+from app import azure_clients
 from app.agents.retrieval import build_odata_filter
 from app.agents.untrusted import fence
-from app.config import Settings, get_settings
+from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
 
 logger = logging.getLogger(__name__)
@@ -41,28 +39,6 @@ _SELECT = ["content", "title", "source_url"]
 _EMBED_BATCH_SIZE = 16
 _MAX_QUERY_CHARS = 2000
 _MAX_DOC_CHARS = 1500
-
-_search_client: SearchClient | None = None
-_client_lock = threading.Lock()
-
-
-def search_endpoint(settings: Settings) -> str:
-    return settings.azure_ai_search_endpoint or f"https://{settings.azure_ai_search_connection_name}.search.windows.net"
-
-
-def _get_search_client() -> SearchClient:
-    """One shared client (and credential, so tokens are cached) for all searches."""
-    global _search_client
-    if _search_client is None:
-        with _client_lock:
-            if _search_client is None:
-                settings = get_settings()
-                _search_client = SearchClient(
-                    endpoint=search_endpoint(settings),
-                    index_name=settings.ai_search_index_name,
-                    credential=DefaultAzureCredential(),
-                )
-    return _search_client
 
 
 # ── Embeddings ───────────────────────────────────────────
@@ -153,7 +129,7 @@ def search_kb(
         options["query_type"] = "semantic"
         options["semantic_configuration_name"] = "default"
 
-    client = _get_search_client()
+    client = azure_clients.search_client(settings)
     results: Iterable[dict[str, Any]]
     while True:
         try:

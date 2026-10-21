@@ -8,7 +8,7 @@ from collections import deque
 
 import httpx
 
-from app import main
+from app import logging_setup, main
 
 
 async def test_health_stays_responsive_while_a_blocking_handler_runs(monkeypatch):
@@ -16,7 +16,7 @@ async def test_health_stays_responsive_while_a_blocking_handler_runs(monkeypatch
         time.sleep(1.5)
         return {"answer_markdown": "done"}
 
-    monkeypatch.setattr("app.agents.foundry_agent.run_single_answer", slow_answer)
+    monkeypatch.setattr("app.agents.answers.run_single_answer", slow_answer)
     body = {"question": "What is Azure?", "client_id": "c", "project_id": "p"}
 
     transport = httpx.ASGITransport(app=main.app)
@@ -50,17 +50,17 @@ class FakeWebSocket:
 
 async def test_log_records_from_worker_threads_reach_websocket_clients(monkeypatch):
     healthy, broken = FakeWebSocket(), FakeWebSocket(fail=True)
-    monkeypatch.setattr(main, "_main_loop", asyncio.get_running_loop())
-    monkeypatch.setattr(main, "_ws_clients", {healthy, broken})
-    monkeypatch.setattr(main, "_log_buffer", deque(maxlen=200))
+    monkeypatch.setattr(logging_setup, "_main_loop", asyncio.get_running_loop())
+    monkeypatch.setattr(logging_setup, "ws_clients", {healthy, broken})
+    monkeypatch.setattr(logging_setup, "log_buffer", deque(maxlen=200))
 
     record = logging.LogRecord("test", logging.INFO, __file__, 1, "from a worker thread", None, None)
-    worker = threading.Thread(target=main.WebSocketLogHandler().emit, args=(record,))
+    worker = threading.Thread(target=logging_setup.WebSocketLogHandler().emit, args=(record,))
     worker.start()
     worker.join()
     await asyncio.sleep(0.1)  # let the loop run the scheduled broadcast
 
     assert [entry["message"] for entry in healthy.received] == ["from a worker thread"]
-    assert broken not in main._ws_clients  # clients whose send fails are dropped
-    assert healthy in main._ws_clients
-    assert len(main._log_buffer) == 1
+    assert broken not in logging_setup.ws_clients  # clients whose send fails are dropped
+    assert healthy in logging_setup.ws_clients
+    assert len(logging_setup.log_buffer) == 1

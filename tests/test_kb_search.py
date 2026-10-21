@@ -6,6 +6,7 @@ import pytest
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.search.documents.models import VectorFilterMode
 
+from app import azure_clients
 from app.agents import kb_search
 from app.config import Settings
 
@@ -47,7 +48,7 @@ class FakeSearchClient:
 @pytest.fixture
 def search(monkeypatch):
     def _install(client, **settings):
-        monkeypatch.setattr(kb_search, "_search_client", client)
+        monkeypatch.setattr(azure_clients, "search_client", lambda _settings: client)
         monkeypatch.setattr(kb_search, "get_settings", lambda: make_settings(**settings))
         return client
 

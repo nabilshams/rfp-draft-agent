@@ -11,6 +11,8 @@ build/
 .ruff_cache/
 .pytest_cache/
 htmlcov/
+.coverage
+.coverage.*
 *.log
 .vscode/
 # azd environment state (contains subscription/tenant IDs)

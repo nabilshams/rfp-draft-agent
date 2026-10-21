@@ -3,13 +3,8 @@
 import httpx
 
 from app.ingestion import pipeline
-from app.main import (
-    AnswerRequest,
-    DraftRequest,
-    GenerateDocRequest,
-    GenerateSectionRequest,
-    app,
-)
+from app.main import app
+from app.schemas import AnswerRequest, DraftRequest, GenerateDocRequest, GenerateSectionRequest
 
 SECRET = "Contact jane@example.com about the $50,000 budget"
 CLEAN = "Contact [REDACTED-EMAIL] about the [REDACTED-PRICE] budget"
@@ -117,7 +112,7 @@ class TestExtraction:
 
 
 async def test_answer_endpoint_passes_only_the_redacted_question(monkeypatch):
-    from app.agents import foundry_agent
+    from app.agents import answers
 
     seen = {}
 
@@ -125,7 +120,7 @@ async def test_answer_endpoint_passes_only_the_redacted_question(monkeypatch):
         seen.update(kwargs)
         return {"answer": "ok"}
 
-    monkeypatch.setattr(foundry_agent, "run_single_answer", fake)
+    monkeypatch.setattr(answers, "run_single_answer", fake)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
         resp = await client.post(
             "/answer",

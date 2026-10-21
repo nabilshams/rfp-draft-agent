@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from azure.core.exceptions import HttpResponseError
 
-from app.agents import foundry_agent, kb_search
+from app.agents import answers, kb_search, lifecycle, runner, sections, strategies
 from app.agents.kb_search import RetrievedContext
 
 KB_A = "https://kb.example/knowledge-base/acme/p1/general/encryption.pdf"
@@ -31,7 +31,7 @@ def agent(monkeypatch):
     def fake_run(agent_id, content, *, web_search=False):
         state.prompts.append(content)
         state.web_search.append(web_search)
-        return foundry_agent.AgentRunResult(
+        return runner.AgentRunResult(
             status=state.status,
             run_id="run-1",
             text=state.respond(content),
@@ -39,8 +39,8 @@ def agent(monkeypatch):
             has_response=True,
         )
 
-    monkeypatch.setattr(foundry_agent, "run_agent_prompt", fake_run)
-    monkeypatch.setattr(foundry_agent, "_ensure_agent", lambda name: "agent-1")
+    monkeypatch.setattr(runner, "run_agent_prompt", fake_run)
+    monkeypatch.setattr(lifecycle, "ensure_agent", lambda name: "agent-1")
     return state
 
 
@@ -95,7 +95,7 @@ def answer_json(req_id, *, text=None, evidence=None):
 
 class TestRunDraft:
     def draft(self, requirements=REQS, requirements_json=None):
-        return foundry_agent.run_draft(
+        return answers.run_draft(
             rfp_id="rfp1",
             requirements_json=requirements_json if requirements_json is not None else json.dumps(requirements),
             tone="professional",
@@ -178,7 +178,7 @@ class TestRunDraft:
 
 class TestStreamPerRequirement:
     def stream(self, requirements=REQS):
-        return list(foundry_agent.stream_per_requirement(requirements=requirements, tone="professional", **ACCESS))
+        return list(strategies.stream_per_requirement(requirements=requirements, tone="professional", **ACCESS))
 
     def test_each_requirement_is_grounded_on_its_own_documents(self, agent, kb):
         kb.docs = {REQS[0]["text"]: [doc("Encryption", KB_A)], REQS[1]["text"]: [doc("Support", KB_B)]}
@@ -249,7 +249,7 @@ class TestStreamPerRequirement:
 
 class TestSingleAnswer:
     def ask(self):
-        return foundry_agent.run_single_answer(question="Do you encrypt data?", **ACCESS)
+        return answers.run_single_answer(question="Do you encrypt data?", **ACCESS)
 
     def test_the_question_is_searched_and_the_answer_is_cleaned(self, agent, kb):
         kb.docs = {"Do you encrypt data?": [doc("Encryption", KB_A)]}
@@ -317,7 +317,7 @@ class TestSections:
     def test_a_section_is_grounded_on_its_own_requirements_documents(self, agent, kb):
         router(agent)
 
-        self.run(foundry_agent.stream_per_section, kb)
+        self.run(strategies.stream_per_section, kb)
 
         narrative_prompts = [p for p in agent.prompts if "section of an RFP response document" in p]
         by_section = {("Executive" if "Executive Summary" in p.split("\n")[0] else "Technical"): p for p in narrative_prompts}
@@ -327,7 +327,7 @@ class TestSections:
     def test_narratives_cite_only_their_own_sources(self, agent, kb):
         router(agent)
 
-        narratives = {n["section_name"]: n["narrative_markdown"] for n in self.run(foundry_agent.stream_per_section, kb)}
+        narratives = {n["section_name"]: n["narrative_markdown"] for n in self.run(strategies.stream_per_section, kb)}
 
         assert f"[kb]({KB_A})" in narratives["Executive Summary"]
         assert KB_B not in narratives["Executive Summary"]  # retrieved for another section
@@ -337,7 +337,7 @@ class TestSections:
     def test_map_reduce_narratives_cite_only_what_the_answers_cite(self, agent, kb):
         router(agent)
 
-        narratives = self.run(foundry_agent.stream_map_reduce, kb)
+        narratives = self.run(strategies.stream_map_reduce, kb)
 
         text = " ".join(n["narrative_markdown"] for n in narratives)
         assert f"[kb]({KB_A})" in text  # cited by the requirement answers
@@ -350,7 +350,7 @@ def test_a_section_narrative_function_checks_links_against_its_context(agent):
         {"section_name": "S", "narrative_markdown": f"[a]({KB_A}) [b]({FAKE})", "requirement_ids": ["R1"]}
     )
 
-    narrative = foundry_agent._generate_section_narrative(
+    narrative = sections.generate_section_narrative(
         section_name="S",
         req_ids=["R1"],
         section_reqs=REQS[:1],

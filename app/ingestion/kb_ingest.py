@@ -7,15 +7,13 @@ indexing.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import tiktoken
-from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
-from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
     SearchableField,
@@ -30,15 +28,18 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     VectorSearchProfile,
 )
-from azure.storage.blob import BlobServiceClient
 
+from app import azure_clients
 from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
 from app.ingestion.rfp_extract import extract_text
 
 logger = logging.getLogger(__name__)
 
-_tokenizer = tiktoken.get_encoding("cl100k_base")
+@functools.lru_cache(maxsize=1)
+def _tokenizer() -> tiktoken.Encoding:
+    """Loaded on first use: it can need a download, which importing the application must not trigger."""
+    return tiktoken.get_encoding("cl100k_base")
 
 # ── Index schema ──────────────────────────────────────────
 
@@ -104,19 +105,8 @@ def get_index_schema(index_name: str) -> SearchIndex:
 def ensure_index_exists() -> None:
     """Create the search index, or update it to the current definition."""
     settings = get_settings()
-    credential = DefaultAzureCredential()
-    # Extract the search endpoint from the connection name – in production this
-    # would come from the Foundry project connections.  For standalone usage,
-    # the env var ``AZURE_AI_SEARCH_ENDPOINT`` can be provided.
-    import os
-
-    search_endpoint = os.environ.get(
-        "AZURE_AI_SEARCH_ENDPOINT",
-        f"https://{settings.azure_ai_search_connection_name}.search.windows.net",
-    )
-    client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
     index = get_index_schema(settings.ai_search_index_name)
-    client.create_or_update_index(index)
+    azure_clients.search_index_client(settings).create_or_update_index(index)
     logger.info("Search index '%s' ensured.", settings.ai_search_index_name)
 
 
@@ -144,13 +134,13 @@ def _ensure_index_once() -> None:
 
 def _chunk_text(text: str, max_tokens: int = 1000, overlap_tokens: int = 150) -> list[str]:
     """Split *text* into chunks of roughly *max_tokens* with overlap."""
-    tokens = _tokenizer.encode(text)
+    tokens = _tokenizer().encode(text)
     chunks: list[str] = []
     start = 0
     while start < len(tokens):
         end = min(start + max_tokens, len(tokens))
         chunk_tokens = tokens[start:end]
-        chunks.append(_tokenizer.decode(chunk_tokens))
+        chunks.append(_tokenizer().decode(chunk_tokens))
         start += max_tokens - overlap_tokens
     return chunks
 
@@ -172,7 +162,7 @@ def _chunk_by_headings(text: str, max_tokens: int = 1000) -> list[str]:
 
     chunks: list[str] = []
     for sec in raw_sections:
-        if len(_tokenizer.encode(sec)) > max_tokens:
+        if len(_tokenizer().encode(sec)) > max_tokens:
             chunks.extend(_chunk_text(sec, max_tokens))
         else:
             chunks.append(sec)
@@ -183,31 +173,9 @@ def _chunk_by_headings(text: str, max_tokens: int = 1000) -> list[str]:
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
-    """Call Azure OpenAI embedding model via the Azure OpenAI client."""
-    from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-    from openai import AzureOpenAI
-
+    """Call the Azure OpenAI embedding model."""
     settings = get_settings()
-    token_provider = get_bearer_token_provider(
-        DefaultAzureCredential(),
-        "https://cognitiveservices.azure.com/.default",
-    )
-    # Use the .openai.azure.com endpoint for embeddings
-    openai_endpoint = settings.foundry_project_endpoint.rstrip("/")
-    # Derive the openai endpoint from the services endpoint
-    if ".services.ai.azure.com" in openai_endpoint:
-        base = openai_endpoint.split(".services.ai.azure.com")[0]
-        openai_endpoint = base + ".openai.azure.com"
-    elif ".cognitiveservices.azure.com" in openai_endpoint:
-        base = openai_endpoint.split(".cognitiveservices.azure.com")[0]
-        openai_endpoint = base + ".openai.azure.com"
-
-    client = AzureOpenAI(
-        azure_endpoint=openai_endpoint,
-        azure_ad_token_provider=token_provider,
-        api_version="2024-10-21",
-    )
-    response = client.embeddings.create(
+    response = azure_clients.openai_client(settings).embeddings.create(
         model=settings.embedding_model_deployment_name,
         input=texts,
     )
@@ -235,12 +203,10 @@ def ingest_blob(
     Returns the number of chunks indexed.
     """
     settings = get_settings()
-    credential = DefaultAzureCredential()
 
     # 1. Download blob
     _ensure_index_once()
-    blob_service = BlobServiceClient(account_url=settings.azure_storage_account_url, credential=credential)
-    container = blob_service.get_container_client(settings.storage_kb_container)
+    container = azure_clients.container(settings, settings.storage_kb_container)
     blob_data = container.download_blob(blob_name).readall()
 
     filename = blob_name.rsplit("/", 1)[-1]
@@ -286,17 +252,6 @@ def ingest_blob(
         )
 
     # 6. Upload to index
-    import os
-
-    search_endpoint = os.environ.get(
-        "AZURE_AI_SEARCH_ENDPOINT",
-        f"https://{settings.azure_ai_search_connection_name}.search.windows.net",
-    )
-    search_client = SearchClient(
-        endpoint=search_endpoint,
-        index_name=settings.ai_search_index_name,
-        credential=credential,
-    )
-    search_client.upload_documents(documents)
+    azure_clients.search_client(settings).upload_documents(documents)
     logger.info("Indexed %d chunks for %s", len(documents), blob_name)
     return len(documents)

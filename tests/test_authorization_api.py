@@ -12,9 +12,10 @@ import httpx
 import pytest
 from azure.core.exceptions import ResourceNotFoundError
 
-from app import main
+from app import azure_clients, main
 from app.auth.ratelimit import limiter
 from app.config import Settings, get_settings
+from app.routers import template
 
 SAMPLE_DOCX = (Path(__file__).parent / "fixtures" / "sample_rfp.docx").read_bytes()
 KB_BLOB = "acme/p1/general/guide.pdf"
@@ -119,6 +120,7 @@ class FakeSearch:
 @pytest.fixture
 def world(monkeypatch):
     limiter.reset()
+    azure_clients.reset()
     storage, search, ingests = FakeStorage(), FakeSearch(), []
 
     def fake_ingest(**kwargs):
@@ -128,7 +130,8 @@ def world(monkeypatch):
     monkeypatch.setattr("azure.storage.blob.BlobServiceClient", storage)
     monkeypatch.setattr("azure.search.documents.SearchClient", search)
     monkeypatch.setattr("app.ingestion.kb_ingest.ingest_blob", fake_ingest)
-    return SimpleNamespace(storage=storage, search=search, ingests=ingests)
+    yield SimpleNamespace(storage=storage, search=search, ingests=ingests)
+    azure_clients.reset()
 
 
 def make_settings(mode="easyauth", admin_oids="admin-1", **overrides) -> Settings:
@@ -224,7 +227,7 @@ class TestRfpOwnership:
 
     async def test_outputs_follow_rfp_ownership(self, client, world, monkeypatch):
         monkeypatch.setattr(
-            "app.agents.foundry_agent.run_draft",
+            "app.agents.answers.run_draft",
             lambda **kwargs: {"executive_summary": "x", "solution_overview": "y", "responses": []},
         )
         rfp_id = await upload_rfp(client, A)
@@ -483,7 +486,7 @@ class TestTemplateUpload:
     @pytest.fixture
     def template_path(self, tmp_path, monkeypatch):
         path = tmp_path / "templates" / "rfp_response_template.docx"
-        monkeypatch.setattr(main, "_TEMPLATE_PATH", path)
+        monkeypatch.setattr(template, "TEMPLATE_PATH", path)
         return path
 
     async def upload(self, client, who, data=SAMPLE_DOCX):
@@ -560,7 +563,7 @@ class TestUploadLimit:
 class TestRateLimiting:
     @pytest.fixture(autouse=True)
     def fake_agent(self, monkeypatch):
-        monkeypatch.setattr("app.agents.foundry_agent.run_single_answer", lambda **kwargs: {"answer_markdown": "ok"})
+        monkeypatch.setattr("app.agents.answers.run_single_answer", lambda **kwargs: {"answer_markdown": "ok"})
 
     async def ask(self, client, who):
         body = {"question": "q", "client_id": "acme", "project_id": "p1"}

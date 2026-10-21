@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 from azure.ai.agents.models import MessageRole, MessageTextUrlCitationAnnotation, MessageTextUrlCitationDetails
 
-from app.agents import foundry_agent
+from app import azure_clients
+from app.agents import runner
 
 
 class FakeAgentsClient:
@@ -65,9 +66,9 @@ class FakeAgentsClient:
 @pytest.fixture
 def install_client(monkeypatch):
     def _install(client, timeout=600):
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
-        monkeypatch.setattr(foundry_agent, "get_settings", lambda: SimpleNamespace(run_timeout_seconds=timeout))
-        monkeypatch.setattr(foundry_agent.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(azure_clients, "agents_client", lambda _settings: client)
+        monkeypatch.setattr(runner, "get_settings", lambda: SimpleNamespace(run_timeout_seconds=timeout))
+        monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     return _install
 
@@ -76,7 +77,7 @@ def test_completed_run_returns_reply_and_deletes_thread(install_client):
     client = FakeAgentsClient(["queued", "in_progress", "completed"])
     install_client(client)
 
-    result = foundry_agent.run_agent_prompt("agent-1", "question")
+    result = runner.run_agent_prompt("agent-1", "question")
 
     assert result.completed
     assert result.text == "Hello"
@@ -97,7 +98,7 @@ def test_web_citation_urls_are_collected_from_real_sdk_annotations(install_clien
     client = FakeAgentsClient(["completed"], annotations=[annotation])
     install_client(client)
 
-    result = foundry_agent.run_agent_prompt("agent-1", "question")
+    result = runner.run_agent_prompt("agent-1", "question")
 
     assert result.annotation_urls == {"https://learn.microsoft.com/azure/x"}
 
@@ -106,14 +107,14 @@ def test_annotations_without_a_url_are_ignored(install_client):
     client = FakeAgentsClient(["completed"], annotations=[SimpleNamespace(type="file_citation")])
     install_client(client)
 
-    assert foundry_agent.run_agent_prompt("agent-1", "question").annotation_urls == set()
+    assert runner.run_agent_prompt("agent-1", "question").annotation_urls == set()
 
 
 def test_failed_run_reports_status_without_reading_messages(install_client):
     client = FakeAgentsClient(["failed"])
     install_client(client)
 
-    result = foundry_agent.run_agent_prompt("agent-1", "question")
+    result = runner.run_agent_prompt("agent-1", "question")
 
     assert not result.completed
     assert result.status == "failed"
@@ -128,9 +129,9 @@ def test_run_that_never_finishes_is_cancelled_after_timeout(install_client, monk
     install_client(client, timeout=300)
     # Fake clock: every reading advances 100 seconds.
     ticks = itertools.count(0, 100)
-    monkeypatch.setattr(foundry_agent.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(ticks))
 
-    result = foundry_agent.run_agent_prompt("agent-1", "question")
+    result = runner.run_agent_prompt("agent-1", "question")
 
     assert result.status == "timed_out"
     assert not result.completed
@@ -143,7 +144,7 @@ def test_thread_is_deleted_when_posting_the_message_fails(install_client):
     install_client(client)
 
     with pytest.raises(RuntimeError, match="cannot post message"):
-        foundry_agent.run_agent_prompt("agent-1", "question")
+        runner.run_agent_prompt("agent-1", "question")
 
     assert client.deleted == ["thread-1"]
 
@@ -152,7 +153,7 @@ def test_thread_delete_failure_does_not_fail_the_request(install_client):
     client = FakeAgentsClient(["completed"], fail_delete=True)
     install_client(client)
 
-    result = foundry_agent.run_agent_prompt("agent-1", "question")
+    result = runner.run_agent_prompt("agent-1", "question")
 
     assert result.completed
     assert result.text == "Hello"
