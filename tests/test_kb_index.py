@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app import azure_clients
 from app.ingestion import kb_ingest
 
 
@@ -39,16 +40,12 @@ class TestEnsureIndexOnce:
         state = SimpleNamespace(updates=[], fail=False)
 
         class FakeIndexClient:
-            def __init__(self, endpoint, credential):
-                state.endpoint = endpoint
-
             def create_or_update_index(self, index):
                 if state.fail:
                     raise RuntimeError("authorization has not propagated yet")
                 state.updates.append(index.name)
 
-        monkeypatch.setattr(kb_ingest, "SearchIndexClient", FakeIndexClient)
-        monkeypatch.setattr(kb_ingest, "DefaultAzureCredential", lambda: object())
+        monkeypatch.setattr(azure_clients, "search_index_client", lambda _settings: FakeIndexClient())
         return state
 
     def test_the_index_is_created_or_updated_once_per_process(self, index_client):
@@ -72,11 +69,11 @@ class TestEnsureIndexOnce:
         class StopHere(Exception):
             pass
 
-        def fake_blob_service(**kwargs):
+        def fake_container(settings, name):
             order.append("download")
             raise StopHere
 
-        monkeypatch.setattr(kb_ingest, "BlobServiceClient", fake_blob_service)
+        monkeypatch.setattr(azure_clients, "container", fake_container)
 
         with pytest.raises(StopHere):
             kb_ingest.ingest_blob("acme/p1/general/guide.pdf", "acme", "p1", "general", oids=["u"])

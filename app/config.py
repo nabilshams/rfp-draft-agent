@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # Longest a single agent run may take before it is cancelled.
     run_timeout_seconds: int = Field(600, alias="RUN_TIMEOUT_SECONDS", ge=30)
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    host: str = Field("0.0.0.0", alias="HOST")
+    port: int = Field(8000, alias="PORT", ge=1, le=65535)
+    uvicorn_reload: bool = Field(False, alias="UVICORN_RELOAD")
 
     model_config = {
         "env_file": ".env",
@@ -96,6 +99,27 @@ class Settings(BaseSettings):
     @property
     def admin_oid_set(self) -> frozenset[str]:
         return frozenset(oid.strip() for oid in self.admin_oids.split(",") if oid.strip())
+
+    @property
+    def search_endpoint(self) -> str:
+        return self.azure_ai_search_endpoint or f"https://{self.azure_ai_search_connection_name}.search.windows.net"
+
+    @property
+    def agents_endpoint(self) -> str:
+        """The project-scoped endpoint of the Foundry Agent Service."""
+        base = self.foundry_project_endpoint.rstrip("/")
+        base = base.removesuffix("/openai")  # legacy form
+        return f"{base}/api/projects/{self.foundry_project_name}" if self.foundry_project_name else base
+
+    @property
+    def openai_endpoint(self) -> str:
+        """The Azure OpenAI endpoint of the Foundry account (used for embeddings)."""
+        endpoint = self.foundry_project_endpoint.rstrip("/")
+        for suffix in (".services.ai.azure.com", ".cognitiveservices.azure.com"):
+            if suffix in endpoint:
+                return endpoint.split(suffix)[0] + ".openai.azure.com"
+        return endpoint
+
 
 
 _settings: Settings | None = None

@@ -10,3 +10,6 @@ os.environ["AUTH_MODE"] = "disabled"
 # Keep tests independent of a developer's local .env.
 os.environ["REDACTION_CUSTOMER_NAMES"] = ""
 os.environ["BING_CONNECTION_ID"] = ""
+
+# Fixtures shared by the API tests (in-memory Azure fakes and an HTTP client).
+from .test_authorization_api import client, use_settings, world  # noqa: E402, F401

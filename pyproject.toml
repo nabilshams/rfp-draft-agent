@@ -56,3 +56,12 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "ASYNC"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["app"]
+
+# CI fails below this. Set just under the measured figure (91%): raise it as coverage grows, never lower it.
+[tool.coverage.report]
+fail_under = 88
+show_missing = true
+skip_covered = true

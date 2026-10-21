@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.agents import foundry_agent, kb_search
+from app import azure_clients
+from app.agents import answers, kb_search, lifecycle, runner, strategies
 from app.config import Settings, get_settings
 from app.main import app
 
@@ -25,7 +26,7 @@ class FakeClient:
             create=lambda **_kw: None,
             list=lambda thread_id: [
                 SimpleNamespace(
-                    role=foundry_agent.MessageRole.AGENT,
+                    role=runner.MessageRole.AGENT,
                     content=[SimpleNamespace(text=SimpleNamespace(value="hi", annotations=[]))],
                 )
             ],
@@ -58,90 +59,99 @@ class FakeClient:
 def configured(monkeypatch):
     def _configure(bing=BING_ID):
         settings = Settings(bing_connection_id=bing)
-        monkeypatch.setattr(foundry_agent, "get_settings", lambda: settings)
+        monkeypatch.setattr(runner, "get_settings", lambda: settings)
+        monkeypatch.setattr(lifecycle, "get_settings", lambda: settings)
         return settings
 
     return _configure
 
 
+@pytest.fixture
+def use_client(monkeypatch):
+    def _use(client):
+        monkeypatch.setattr(azure_clients, "agents_client", lambda _settings: client)
+
+    return _use
+
+
 @pytest.fixture(autouse=True)
 def fresh_agent_state(monkeypatch):
-    monkeypatch.setattr(foundry_agent, "_draft_agent_id", None)
-    monkeypatch.setattr(foundry_agent, "_qa_agent_id", None)
-    monkeypatch.setattr(foundry_agent, "_current_instructions_hash", None)
-    monkeypatch.setattr(foundry_agent.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(lifecycle, "_draft_agent_id", None)
+    monkeypatch.setattr(lifecycle, "_qa_agent_id", None)
+    monkeypatch.setattr(lifecycle, "_current_instructions_hash", None)
+    monkeypatch.setattr(runner.time, "sleep", lambda _s: None)
 
 
 class TestRunTools:
-    def test_a_plain_run_attaches_no_tools(self, monkeypatch, configured):
+    def test_a_plain_run_attaches_no_tools(self, configured, use_client):
         configured()
         client = FakeClient()
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        foundry_agent.run_agent_prompt("a1", "q")
+        runner.run_agent_prompt("a1", "q")
 
         assert "tools" not in client.run_kwargs
 
-    def test_a_web_search_run_attaches_bing_to_that_run_only(self, monkeypatch, configured):
+    def test_a_web_search_run_attaches_bing_to_that_run_only(self, configured, use_client):
         configured()
         client = FakeClient()
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        foundry_agent.run_agent_prompt("a1", "q", web_search=True)
+        runner.run_agent_prompt("a1", "q", web_search=True)
 
         (tool,) = client.run_kwargs["tools"]
         assert tool["type"] == "bing_grounding"
         assert tool["bing_grounding"]["search_configurations"][0]["connection_id"] == BING_ID
 
-    def test_web_search_without_a_connection_is_refused_before_anything_is_sent(self, monkeypatch, configured):
+    def test_web_search_without_a_connection_is_refused_before_anything_is_sent(self, configured, use_client):
         configured(bing="")
         client = FakeClient()
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        with pytest.raises(foundry_agent.WebSearchNotConfigured):
-            foundry_agent.run_agent_prompt("a1", "q", web_search=True)
+        with pytest.raises(runner.WebSearchNotConfigured):
+            runner.run_agent_prompt("a1", "q", web_search=True)
 
         assert client.run_kwargs is None
 
 
 class TestAgentsCarryNoStandingTool:
-    def test_new_agents_are_created_without_tools_even_when_bing_is_configured(self, monkeypatch, configured):
+    def test_new_agents_are_created_without_tools_even_when_bing_is_configured(self, configured, use_client):
         configured()
         client = FakeClient()
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        foundry_agent._ensure_agent(foundry_agent._DRAFT_AGENT_NAME)
+        lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME)
 
         (created,) = client.created
         assert "tools" not in created
 
-    def test_bing_is_removed_from_an_agent_created_by_an_earlier_version(self, monkeypatch, configured):
+    def test_bing_is_removed_from_an_agent_created_by_an_earlier_version(self, configured, use_client):
         configured()
-        old = SimpleNamespace(id="old", name=foundry_agent._DRAFT_AGENT_NAME, tools=[BING_TOOL])
+        old = SimpleNamespace(id="old", name=lifecycle.DRAFT_AGENT_NAME, tools=[BING_TOOL])
         client = FakeClient([old])
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        assert foundry_agent._ensure_agent(foundry_agent._DRAFT_AGENT_NAME) == "old"
+        assert lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME) == "old"
 
         assert old.tools == []
         assert ("old", {"tools": []}) in client.updated
 
-    def test_it_fails_closed_if_bing_cannot_be_removed(self, monkeypatch, configured):
+    def test_it_fails_closed_if_bing_cannot_be_removed(self, configured, use_client):
         configured()
-        old = SimpleNamespace(id="old", name=foundry_agent._DRAFT_AGENT_NAME, tools=[BING_TOOL])
+        old = SimpleNamespace(id="old", name=lifecycle.DRAFT_AGENT_NAME, tools=[BING_TOOL])
         client = FakeClient([old], strip_works=False)
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
         with pytest.raises(RuntimeError, match="Bing"):
-            foundry_agent._ensure_agent(foundry_agent._DRAFT_AGENT_NAME)
+            lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME)
 
-    def test_agents_without_tools_are_left_alone(self, monkeypatch, configured):
+    def test_agents_without_tools_are_left_alone(self, configured, use_client):
         configured()
-        clean = SimpleNamespace(id="ok", name=foundry_agent._DRAFT_AGENT_NAME, tools=[])
+        clean = SimpleNamespace(id="ok", name=lifecycle.DRAFT_AGENT_NAME, tools=[])
         client = FakeClient([clean])
-        monkeypatch.setattr(foundry_agent, "_get_agents_client", lambda: client)
+        use_client(client)
 
-        foundry_agent._ensure_agent(foundry_agent._DRAFT_AGENT_NAME)
+        lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME)
 
         assert all("tools" not in kwargs for _, kwargs in client.updated)
 
@@ -153,10 +163,10 @@ class TestFlowsPassTheChoiceThrough:
 
         def fake_run(agent_id, content, *, web_search=False):
             flags.append(web_search)
-            return foundry_agent.AgentRunResult(status="completed", text='{"meets": "Yes"}', has_response=True)
+            return runner.AgentRunResult(status="completed", text='{"meets": "Yes"}', has_response=True)
 
-        monkeypatch.setattr(foundry_agent, "run_agent_prompt", fake_run)
-        monkeypatch.setattr(foundry_agent, "_ensure_agent", lambda name: "agent-1")
+        monkeypatch.setattr(runner, "run_agent_prompt", fake_run)
+        monkeypatch.setattr(lifecycle, "ensure_agent", lambda name: "agent-1")
         monkeypatch.setattr(kb_search, "embed_queries", lambda qs: [[0.1]] * len(qs))
         monkeypatch.setattr(kb_search, "search_kb", lambda **_kw: [])
         return flags
@@ -166,7 +176,7 @@ class TestFlowsPassTheChoiceThrough:
     @pytest.mark.parametrize("allowed", [False, True])
     def test_per_requirement(self, seen, allowed):
         list(
-            foundry_agent.stream_per_requirement(
+            strategies.stream_per_requirement(
                 requirements=self.REQS, client_id="c", project_id="p", user_oid="u", allow_web_search=allowed
             )
         )
@@ -174,13 +184,13 @@ class TestFlowsPassTheChoiceThrough:
 
     @pytest.mark.parametrize("allowed", [False, True])
     def test_single_answer(self, seen, allowed):
-        foundry_agent.run_single_answer(
+        answers.run_single_answer(
             question="q", client_id="c", project_id="p", user_oid="u", allow_web_search=allowed
         )
         assert seen == [allowed]
 
     def test_the_default_is_no_web_search(self, seen):
-        foundry_agent.run_single_answer(question="q", client_id="c", project_id="p", user_oid="u")
+        answers.run_single_answer(question="q", client_id="c", project_id="p", user_oid="u")
         assert seen == [False]
 
 
@@ -190,40 +200,38 @@ class TestApi:
     @pytest.fixture
     def calls(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(foundry_agent, "run_single_answer", lambda **kw: calls.append(kw) or {"answer_markdown": "ok"})
+        monkeypatch.setattr(answers, "run_single_answer", lambda **kw: calls.append(kw) or {"answer_markdown": "ok"})
         return calls
 
     @pytest.fixture
-    def post(self):
-        async def _post(path, body, bing=""):
+    def request_with(self):
+        async def _request(method, path, body=None, bing=""):
             settings = Settings(auth_mode="disabled", bing_connection_id=bing)
             app.dependency_overrides[get_settings] = lambda: settings
             try:
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-                    return await c.post(path, json=body)
+                    return await c.request(method, path, json=body)
             finally:
                 app.dependency_overrides.pop(get_settings, None)
 
-        return _post
+        return _request
 
-    async def test_web_search_is_off_by_default(self, calls, post):
-        resp = await post("/answer", self.BODY, bing=BING_ID)
+    async def test_web_search_is_off_by_default(self, calls, request_with):
+        resp = await request_with("POST", "/answer", self.BODY, bing=BING_ID)
         assert resp.status_code == 200
         assert calls[0]["allow_web_search"] is False
 
-    async def test_it_is_passed_on_when_requested_and_configured(self, calls, post):
-        resp = await post("/answer", {**self.BODY, "allow_web_search": True}, bing=BING_ID)
+    async def test_it_is_passed_on_when_requested_and_configured(self, calls, request_with):
+        resp = await request_with("POST", "/answer", {**self.BODY, "allow_web_search": True}, bing=BING_ID)
         assert resp.status_code == 200
         assert calls[0]["allow_web_search"] is True
 
-    async def test_requesting_it_when_unconfigured_is_a_400(self, calls, post):
-        resp = await post("/answer", {**self.BODY, "allow_web_search": True}, bing="")
+    async def test_requesting_it_when_unconfigured_is_a_400(self, calls, request_with):
+        resp = await request_with("POST", "/answer", {**self.BODY, "allow_web_search": True}, bing="")
         assert resp.status_code == 400
         assert calls == []
 
-    async def test_health_says_whether_it_is_available(self, monkeypatch):
-        from app import main
-
-        for bing, expected in ((BING_ID, True), ("", False)):
-            monkeypatch.setattr(main, "get_settings", lambda bing=bing: Settings(bing_connection_id=bing))
-            assert (await main.health())["web_search_available"] is expected
+    @pytest.mark.parametrize("bing,expected", [(BING_ID, True), ("", False)])
+    async def test_health_says_whether_it_is_available(self, request_with, bing, expected):
+        resp = await request_with("GET", "/health", bing=bing)
+        assert resp.json()["web_search_available"] is expected
