@@ -407,6 +407,46 @@ function createStreamHandler(loading, approach) {
   };
 }
 
+// A draft runs as a background job on the server (a request would be cut off after 240 s): start it, then
+// poll for the events it has produced since the last poll and feed them to the same handler as before.
+const POLL_INTERVAL_MS = 2000, MAX_POLL_FAILURES = 5;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let activeJobId = null;
+
+async function runDraftJob(body, stream) {
+  const started = await postJson('/drafts', body);
+  activeJobId = started.job_id;
+  $('btnCancelDraft').style.display = 'inline-flex';
+
+  let cursor = 0, failures = 0;
+  for (;;) {
+    let job;
+    try {
+      job = await fetchJson('/drafts/' + encodeURIComponent(activeJobId) + '?after=' + cursor);
+      failures = 0;
+    } catch (err) {
+      // The draft keeps running on the server; a dropped poll (network blip, redeploy) is not a failure.
+      if (++failures >= MAX_POLL_FAILURES) throw err;
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    for (const event of job.events) stream.handle(event);
+    cursor = job.next;
+
+    if (job.status === 'failed') throw new Error(job.error || 'The draft failed.');
+    if (job.status === 'cancelled') { toast('Draft cancelled.', 'error'); return; }
+    if (job.status === 'succeeded') return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+$('btnCancelDraft').addEventListener('click', async () => {
+  if (!activeJobId) return;
+  $('btnCancelDraft').disabled = true;
+  try { await postJson('/drafts/' + encodeURIComponent(activeJobId) + '/cancel', {}); }
+  catch (err) { toast('Could not cancel: ' + err.message, 'error'); $('btnCancelDraft').disabled = false; }
+});
+
 $('btnDraft').addEventListener('click', async () => {
   const loading = $('draftLoading'), button = $('btnDraft');
   loading.classList.add('visible');
@@ -423,42 +463,23 @@ $('btnDraft').addEventListener('click', async () => {
   const approach = selectedApproach();
   const stream = createStreamHandler(loading, approach);
   try {
-    const response = await fetch(API + '/draft/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        rfp_id: currentRfpId,
-        client_id: $('draftClientId').value,
-        project_id: $('draftProjectId').value,
-        solution_area: $('draftSolutionArea').value,
-        tone: $('draftTone').value,
-        approach,
-        context: $('draftContext').value.trim(),
-        allow_web_search: $('draftWebSearch').checked,
-        requirements: extractedRequirements,
-      }),
-    });
-    if (!response.ok) throw new Error(await failureText(response));
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        let event;
-        try { event = JSON.parse(line.substring(6)); } catch { continue; } // skip malformed events
-        stream.handle(event);
-      }
-    }
+    await runDraftJob({
+      rfp_id: currentRfpId,
+      client_id: $('draftClientId').value,
+      project_id: $('draftProjectId').value,
+      solution_area: $('draftSolutionArea').value,
+      tone: $('draftTone').value,
+      approach,
+      context: $('draftContext').value.trim(),
+      allow_web_search: $('draftWebSearch').checked,
+      requirements: extractedRequirements,
+    }, stream);
   } catch (err) {
     toast('Draft failed: ' + err.message, 'error');
   } finally {
+    activeJobId = null;
+    $('btnCancelDraft').style.display = 'none';
+    $('btnCancelDraft').disabled = false;
     loading.classList.remove('visible');
     button.disabled = false;
   }

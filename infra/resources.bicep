@@ -125,6 +125,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     resource outputs 'containers' = {
       name: 'outputs'
     }
+    resource draftJobs 'containers' = {
+      name: 'draft-jobs'
+    }
   }
 }
 
@@ -276,6 +279,7 @@ var baseEnv = [
   { name: 'STORAGE_KB_CONTAINER', value: 'knowledge-base' }
   { name: 'STORAGE_RFP_CONTAINER', value: 'rfp-uploads' }
   { name: 'STORAGE_OUTPUT_CONTAINER', value: 'outputs' }
+  { name: 'STORAGE_JOBS_CONTAINER', value: 'draft-jobs' }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection-string' }
   { name: 'AUTH_MODE', value: authMode }
   { name: 'PARALLELISM', value: '1' }

@@ -98,6 +98,7 @@ cp .env.example .env
 | `STORAGE_KB_CONTAINER` | Container for knowledge base docs (default: `knowledge-base`) |
 | `STORAGE_RFP_CONTAINER` | Container for RFP uploads (default: `rfp-uploads`) |
 | `STORAGE_OUTPUT_CONTAINER` | Container for generated outputs (default: `outputs`) |
+| `STORAGE_JOBS_CONTAINER` | Container for background draft jobs (default: `draft-jobs`) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights connection string |
 | `AUTH_MODE` | `disabled`, `easyauth` or `jwt` (default `jwt`). `disabled` turns authentication off and logs a warning at startup; use it for local development only. See [Authentication](#authentication) |
 | `ENTRA_TENANT_ID` | Entra ID tenant ID (`jwt` mode). The old `dev` value is no longer supported; use `AUTH_MODE=disabled` |
@@ -107,6 +108,9 @@ cp .env.example .env
 | `PARALLELISM` | Number of Uvicorn worker processes when running via `python -m app.main` (default: `1`) |
 | `SECTION_PARALLELISM` | Number of sections synthesized concurrently in `per_section` and map-reduce phase 2 (default: `1`) |
 | `RUN_TIMEOUT_SECONDS` | Longest a single agent run may take before it is cancelled and reported as `timed_out` (default: `600`) |
+| `JOB_WORKERS` | Background drafts run at once in this process (default: `2`) |
+| `JOB_MAX_ACTIVE_PER_USER` | Unfinished background drafts one user may have (default: `3`) |
+| `JOB_HEARTBEAT_SECONDS` / `JOB_STALE_SECONDS` | How often a running job records that it is alive (default `15`), and how long without that before it is reported as interrupted (default `120`) |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything) |
 | `SEARCH_SEMANTIC_RANKER` | Re-rank results with Azure AI Search's semantic ranker. A metered feature that needs the Basic tier or above; off by default (default: `false`) |
@@ -196,7 +200,8 @@ curl -X POST http://localhost:8000/rfp/extract \
 ```
 
 ### `POST /draft`
-Generate a full RFP response draft (DOCX + XLSX).
+Generate a full RFP response draft (DOCX + XLSX) in one request. Bound to a single request, so a large RFP can hit
+the platform's 240-second limit; prefer [`POST /drafts`](#post-drafts) for those.
 
 ```bash
 curl -X POST http://localhost:8000/draft \
@@ -222,6 +227,25 @@ curl -X POST http://localhost:8000/draft \
   "elapsed_seconds": 42.3
 }
 ```
+
+### `POST /drafts`
+Start a draft in the background (the body is the same as `/draft/stream`, with optional `requirements`, `approach`,
+`context` and `allow_web_search`). Returns `202` right away; poll the job for progress.
+
+```bash
+curl -X POST http://localhost:8000/drafts -H "Content-Type: application/json" \
+  -d '{"rfp_id": "abc123", "client_id": "acme", "project_id": "proj-42", "approach": "per_requirement"}'
+# {"job_id": "9f1c...", "status": "queued", "status_url": "/drafts/9f1c..."}
+
+curl "http://localhost:8000/drafts/9f1c...?after=0"
+# {"job_id": "9f1c...", "status": "running", "total": 12, "processed": 5,
+#  "events": [{"type": "start", ...}, {"type": "response", "data": {...}}, ...], "next": 6,
+#  "outputs": null, "error": ""}
+```
+
+Poll with `after` set to the previous reply's `next` to receive only new events, until `status` is `succeeded`
+(`outputs` then holds the download URLs), `failed` (see `error`) or `cancelled`. `POST /drafts/{job_id}/cancel`
+asks a running draft to stop. See [Background drafts](#background-drafts).
 
 ### `POST /answer`
 Answer a single question with grounded citations.
@@ -371,9 +395,29 @@ from `azd env get-values` into `.env`.
   one replica because the live log stream and `/metrics` counters are held in memory.
 - Each agent call uses a temporary Foundry thread that is deleted when the call finishes.
 - Container Apps ingress has a fixed [request timeout of 240 seconds](https://learn.microsoft.com/azure/container-apps/ingress-overview).
-  A single non-streaming `POST /draft` over a large RFP can exceed that and be cut off by the platform even
-  though the app keeps working. `POST /draft/stream` returns results as each requirement completes; whether
-  very long streams are also subject to the same limit has not been tested.
+  A draft over a large RFP can take longer, so the UI and any client that drafts large RFPs should use
+  [`POST /drafts`](#post-drafts), which runs the draft in the background. `POST /draft` and `POST /draft/stream`
+  stay bound to one request and can be cut off by the platform (whether a long stream is also subject to the
+  limit has not been tested).
+
+### Background drafts
+
+`POST /drafts` takes the same body as `/draft/stream`, checks it (RFP access, web-search setting), stores a job and
+returns `202` with a `job_id` straight away. The draft runs on a worker thread (`JOB_WORKERS` at a time per
+process; at most `JOB_MAX_ACTIVE_PER_USER` unfinished jobs per user, else `429`).
+
+- **State is in Blob Storage** (`draft-jobs` container, one JSON blob per job), not in memory, so any replica can
+  answer a poll. The record holds the status, progress and every event, the same events `/draft/stream` sends.
+- **A restart loses the work in flight.** The worker records a heartbeat every `JOB_HEARTBEAT_SECONDS`; a job that
+  is still `queued`/`running` with no heartbeat for `JOB_STALE_SECONDS` is reported as `failed` ("interrupted")
+  when someone asks for it, and the user starts it again. Nothing is resumed.
+- **Cancel** with `POST /drafts/{job_id}/cancel`; the worker stops between steps (a step is one agent call, so it
+  can take a moment).
+- **Access** is the owner or an administrator; anyone else gets `404`.
+- Job blobs are not deleted automatically. Add a [lifecycle management rule](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview)
+  to the `draft-jobs` container (for example delete after 7 days).
+- The documents are stored exactly as for `/draft`: download them from `/outputs/{rfp_id}/draft.docx` and
+  `compliance.xlsx` when the job succeeds.
 
 ---
 
@@ -532,8 +576,8 @@ rfp-draft-agent/
 │   ├── schemas.py                 # Request bodies
 │   ├── logging_setup.py           # Console logging + live log stream
 │   ├── metrics.py                 # Request counters for /metrics
-│   ├── routers/                   # One module per area: ops, rfp, draft, kb, outputs, template
-│   ├── services/                  # Steps shared by routers: RFP loading/publishing, KB access, uploads
+│   ├── routers/                   # One module per area: ops, rfp, draft, jobs, kb, outputs, template
+│   ├── services/                  # Shared steps: RFP loading/publishing, draft pipeline, background jobs, KB access, uploads
 │   ├── static/                    # Web UI: index.html, app.css, app.js, safe.js (escaping helpers)
 │   ├── auth/
 │   │   ├── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)

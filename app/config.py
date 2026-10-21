@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     storage_kb_container: str = Field("knowledge-base", alias="STORAGE_KB_CONTAINER")
     storage_rfp_container: str = Field("rfp-uploads", alias="STORAGE_RFP_CONTAINER")
     storage_output_container: str = Field("outputs", alias="STORAGE_OUTPUT_CONTAINER")
+    storage_jobs_container: str = Field("draft-jobs", alias="STORAGE_JOBS_CONTAINER")
 
     # ── Application Insights ──────────────────────────────
     applicationinsights_connection_string: str = Field("", alias="APPLICATIONINSIGHTS_CONNECTION_STRING")
@@ -74,6 +75,13 @@ class Settings(BaseSettings):
     section_parallelism: int = Field(1, alias="SECTION_PARALLELISM", ge=1)
     # Longest a single agent run may take before it is cancelled.
     run_timeout_seconds: int = Field(600, alias="RUN_TIMEOUT_SECONDS", ge=30)
+    # Background draft jobs (POST /drafts): how many run at once in this process, how often a running job
+    # records that it is alive, and how long without that before another request declares it lost.
+    job_workers: int = Field(2, alias="JOB_WORKERS", ge=1, le=16)
+    job_heartbeat_seconds: float = Field(15.0, alias="JOB_HEARTBEAT_SECONDS", gt=0)
+    job_stale_seconds: float = Field(120.0, alias="JOB_STALE_SECONDS", gt=0)
+    # Unfinished jobs one user may have in this process at a time.
+    job_max_active_per_user: int = Field(3, alias="JOB_MAX_ACTIVE_PER_USER", ge=1)
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     host: str = Field("0.0.0.0", alias="HOST")
     port: int = Field(8000, alias="PORT", ge=1, le=65535)
