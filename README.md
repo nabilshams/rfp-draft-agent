@@ -551,6 +551,15 @@ returned by Bing grounding when it is used for that request. After every generat
 section narratives and `/answer`) markdown links to any other URL are reduced to plain text and `evidence`
 entries that cite any other URL are dropped. URLs are compared ignoring a trailing slash and percent-encoding.
 
+**Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
+a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated
+answer or section narrative must also appear in what the model was given (the retrieved sources, the requirement,
+the common context and the RFP's guidance). A sentence with any other figure is replaced by
+`[Statement removed: it contained figures that are not in the sources – recommend human review.]`, and the answer
+lists the removed figures under its risks. This catches invented numbers only; whether a claim without numbers is
+true still needs a person (or the verifier planned in #35). With web search on, figures in the model's own output
+are trusted, because the pages it read can't be seen.
+
 **Measuring retrieval quality.** `python scripts/eval_retrieval.py evals/retrieval_cases.example.jsonl
 --client-id <id> --project-id <id> --oid <object id>` runs your own cases (a query plus the documents that
 should come back) in keyword, hybrid and semantic mode and prints hit rate, recall@k and MRR. Searches run with
@@ -699,6 +708,7 @@ rfp-draft-agent/
 │   │   ├── sections.py            # Section classification and narratives
 │   │   ├── strategies.py          # Per-requirement, per-section and map-reduce streaming
 │   │   ├── kb_search.py           # Hybrid KB search, query embedding, citation checks
+│   │   ├── grounding.py           # Removes figures that are not in the sources
 │   │   ├── normalize.py           # Shape checks on model output
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   ├── retrieval.py           # DLAC + segmentation query builder

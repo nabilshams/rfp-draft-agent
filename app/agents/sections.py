@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from app.agents import kb_search, runner
+from app.agents import grounding, kb_search, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_section
 from app.agents.untrusted import fence, guidance_block
@@ -92,19 +92,34 @@ def _failed_section(section_name: str, req_ids: list[str], status: str) -> dict[
 
 
 def _parse_section(
-    text: str, *, section_name: str, req_ids: list[str], allowed_urls: set[str]
+    text: str, *, section_name: str, req_ids: list[str], allowed_urls: set[str], sources: str
 ) -> dict[str, Any]:
+    """The section the model wrote, with citations to unretrieved URLs and figures missing from *sources* removed."""
     try:
         parsed = runner.parse_json_object(text)
-        return kb_search.sanitize_citations(
+        section = kb_search.sanitize_citations(
             normalize_section(parsed, section_name=section_name, req_ids=req_ids), allowed_urls
         )
     except (ValueError, IndexError):
-        return {
+        section = {
             "section_name": section_name,
             "narrative_markdown": kb_search.sanitize_citations(text, allowed_urls),
             "requirement_ids": req_ids,
         }
+    grounding.ground_fields(section, ("narrative_markdown",), sources)
+    return section
+
+
+# What a narrative writer is told, whatever it is writing from.
+_GROUNDING_RULES = (
+    "Rules for this section:\n"
+    "- State only facts that appear in the material provided below. Cite each factual claim as "
+    "[title](source_url), using only URLs from the sources.\n"
+    "- Do NOT invent statistics, percentages, amounts, customer results, named customers, case studies, years of "
+    "experience or certifications. If the material does not support a claim, write: "
+    "\"Not provided in sources – recommend human review.\"\n"
+    "- Use current Microsoft product names.\n\n"
+)
 
 
 def generate_section_narrative(
@@ -132,6 +147,7 @@ def generate_section_narrative(
             f"Write a coherent, professional narrative (not a list of individual answers). "
             f"Weave the requirements naturally into the narrative. "
             f"Reference requirement IDs in brackets where relevant, e.g. [F1].\n\n"
+            f"{_GROUNDING_RULES}"
             f"Use these sources for grounding:\n{context.block}\n\n"
             f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
@@ -144,8 +160,13 @@ def generate_section_narrative(
         return _failed_section(section_name, req_ids, result.status)
 
     safe, _ = runner.post_generation_guard(result.text)
+    given = "\n".join([context.text, *(str(r.get("text", "")) for r in section_reqs), guidance])
     return _parse_section(
-        safe, section_name=section_name, req_ids=req_ids, allowed_urls=context.urls | result.annotation_urls
+        safe,
+        section_name=section_name,
+        req_ids=req_ids,
+        allowed_urls=context.urls | result.annotation_urls,
+        sources=given,
     )
 
 
@@ -179,6 +200,7 @@ def generate_section_narrative_from_answers(
             f"individual answers. Weave them together naturally. Reference requirement IDs "
             f"in brackets where relevant, e.g. [F1].\n\n"
             f"Keep all factual claims from the original answers. Do not add new information.\n\n"
+            f"{_GROUNDING_RULES}"
             f"--- Answers for this section ---\n\n{answers_digest}\n\n"
             f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
@@ -191,12 +213,22 @@ def generate_section_narrative_from_answers(
         return _failed_section(section_name, req_ids, result.status)
 
     safe, _ = runner.post_generation_guard(result.text)
+    # What the narrator was given: the answers (already checked) and their requirements
+    given = "\n".join(
+        [guidance]
+        + [
+            f"{a.get('requirement_text', '')[:200]}\n{a.get('answer_markdown', '')}\n"
+            + "\n".join(str(e.get("quote", "")) for e in a.get("evidence", []) if isinstance(e, dict))
+            for a in section_answers
+        ]
+    )
     # The answers were already checked; the narrative may cite only what they cite.
     return _parse_section(
         safe,
         section_name=section_name,
         req_ids=req_ids,
         allowed_urls=kb_search.cited_urls(section_answers) | result.annotation_urls,
+        sources=given,
     )
 
 

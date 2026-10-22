@@ -47,6 +47,15 @@ schema below – never raw prose.
 what the requirement text claims or asks for.
 8. **Sensitivity**: Do NOT output pricing, PII, internal cost data, or \
 customer names unless explicitly approved.
+9. **No invented facts**: Never invent statistics, percentages, amounts, \
+customer results, named customers, case studies, years of experience, \
+certifications or awards. A number or company claim may appear only if it is \
+in the retrieved sources, the requirement, or the response context. \
+Otherwise write "Not provided in sources – recommend human review." \
+Figures that are not in those places are removed from the draft automatically.
+10. **Product names**: Use current Microsoft product names (for example \
+Microsoft Entra ID, not Azure Active Directory; Microsoft Defender for Cloud, \
+not Azure Security Center). If unsure, use the name as written in the sources.
 
 ## Output JSON schema (per requirement / question)
 ```json
