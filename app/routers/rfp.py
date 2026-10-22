@@ -15,7 +15,13 @@ from app.auth.entra import UserClaims, get_current_user
 from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
 from app.ingestion.pipeline import extract_requirements, redacted_document_text
-from app.ingestion.rfp_extract import Requirement, RFPExtractionResult
+from app.ingestion.rfp_extract import (
+    Requirement,
+    RFPExtractionResult,
+    add_questions,
+    assign_ids,
+    requirement_type,
+)
 from app.schemas import ExtractRequest
 from app.services.drafts import load_rfp
 from app.services.uploads import read_upload, validated_upload_filename
@@ -108,6 +114,7 @@ def rfp_extract_ai(
         Requirement(
             id=str(r.get("id", "")),
             text=str(r.get("text", "")),
+            type=requirement_type(str(r.get("text", ""))),
             category=str(r.get("category", "general")),
             priority=str(r.get("priority", "standard")),
             source_section=str(r.get("source_section", "")),
@@ -116,10 +123,13 @@ def rfp_extract_ai(
         for r in listed("requirements")
         if isinstance(r, dict)
     ]
+    # Questions the model listed separately are requirements too (unless it also listed them as such)
+    requirements = add_questions(requirements, [str(q) for q in listed("questions")])
+    assign_ids(requirements)
     result = RFPExtractionResult(
         sections=[{"heading": "AI Extraction", "body": f"AI extracted {len(requirements)} requirements"}],
         requirements=requirements,
-        questions=[str(q) for q in listed("questions")],
+        questions=[r.text for r in requirements if r.type == "question"],
         evaluation_criteria=[str(c) for c in listed("evaluation_criteria")],
     )
 

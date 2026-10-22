@@ -24,12 +24,9 @@ from app.ingestion.rfp_extract import (
     RFPExtractionResult,
     _extract_text_from_csv,
     _extract_text_from_excel,
-    extract_requirements_from_spreadsheet,
-    extract_rfp_structure,
+    extract_from_file,
     extract_text,
 )
-
-_SPREADSHEET_EXTENSIONS = (".xlsx", ".xls", ".csv")
 
 # Keys whose values are identifiers, enumerations or URLs, not free text: redacting them would break
 # lookups and citation checks.
@@ -59,19 +56,21 @@ RedactedRecords = Annotated[list[dict[str, Any]], AfterValidator(redact_records)
 
 
 def extract_requirements(filename: str, data: bytes) -> RFPExtractionResult:
-    """Extract an RFP's structure with sensitive content redacted."""
-    if filename.lower().endswith(_SPREADSHEET_EXTENSIONS):
-        extraction = extract_requirements_from_spreadsheet(filename, data)
-        for requirement in extraction.requirements:
-            requirement.text = redact_text(requirement.text)
-            requirement.source_section = redact_text(requirement.source_section)
-        extraction.questions = [redact_text(q) for q in extraction.questions]
-        extraction.evaluation_criteria = [redact_text(c) for c in extraction.evaluation_criteria]
-        extraction.sections = redact_records(extraction.sections)
-        extraction.response_instructions = redact_records([extraction.response_instructions])[0]
-        return extraction
-    # Documents are redacted *before* structure extraction, so nothing sensitive survives in any field.
-    return extract_rfp_structure(redact_text(extract_text(filename, data)))
+    """Extract an RFP's structure with sensitive content redacted (every field of the result)."""
+    return redact_extraction(extract_from_file(filename, data))
+
+
+def redact_extraction(extraction: RFPExtractionResult) -> RFPExtractionResult:
+    for requirement in extraction.requirements:
+        requirement.text = redact_text(requirement.text)
+        requirement.category = redact_text(requirement.category)
+        requirement.source_section = redact_text(requirement.source_section)
+        requirement.keywords = [redact_text(k) for k in requirement.keywords]
+    extraction.questions = [redact_text(q) for q in extraction.questions]
+    extraction.evaluation_criteria = [redact_text(c) for c in extraction.evaluation_criteria]
+    extraction.sections = redact_records(extraction.sections)
+    extraction.response_instructions = redact_records([extraction.response_instructions])[0]
+    return extraction
 
 
 def redacted_document_text(filename: str, data: bytes) -> str:

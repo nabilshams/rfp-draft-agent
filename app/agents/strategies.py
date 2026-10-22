@@ -41,6 +41,7 @@ def stream_per_requirement(
     user_groups: list[str] | None = None,
     user_context: str = "",
     allow_web_search: bool = False,
+    guidance: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Process each requirement independently, yielding one response dict per requirement."""
     # Each requirement gets the documents that match *its* text
@@ -66,6 +67,7 @@ def stream_per_requirement(
                 agent_id=agent_id,
                 user_context=user_context,
                 allow_web_search=allow_web_search,
+                guidance=guidance,
             )
         except Exception as exc:
             logger.error("Error processing requirement %s: %s", req.get("id", "?"), exc)
@@ -84,6 +86,7 @@ def stream_per_section(
     user_groups: list[str] | None = None,
     user_context: str = "",
     allow_web_search: bool = False,
+    guidance: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Group requirements by template section and write a narrative per section.
 
@@ -133,6 +136,7 @@ def stream_per_section(
                     "context": section_context(req_ids),
                     "tone": tone,
                     "agent_id": agent_id,
+                    "guidance": guidance,
                 }
             )
     for section_data in sections.write_sections(
@@ -155,6 +159,7 @@ def stream_per_section(
                 agent_id=agent_id,
                 user_context=user_context,
                 allow_web_search=allow_web_search,
+                guidance=guidance,
             )
             # Only keep compliance fields, not full narrative
             data = {
@@ -185,6 +190,7 @@ def stream_map_reduce(
     user_groups: list[str] | None = None,
     user_context: str = "",
     allow_web_search: bool = False,
+    guidance: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Answer each requirement, then synthesize the answers into section narratives.
 
@@ -222,6 +228,7 @@ def stream_map_reduce(
                 agent_id=agent_id,
                 user_context=user_context,
                 allow_web_search=allow_web_search,
+                guidance=guidance,
             )
         except Exception as exc:
             logger.error("Error on requirement %s: %s", req.get("id", "?"), exc)
@@ -252,6 +259,7 @@ def stream_map_reduce(
                     "section_answers": section_answers,
                     "tone": tone,
                     "agent_id": agent_id,
+                    "guidance": guidance,
                 }
             )
     for section_data in sections.write_sections(

@@ -23,3 +23,13 @@ def fence(label: str, text: str) -> str:
     nonce = secrets.token_hex(6)
     cleaned = _MARKER.sub(lambda m: "\u2039\u2039\u2039" if m.group() == "<<<" else "\u203a\u203a\u203a", text or "")
     return f"<<<{label}:{nonce}\n{cleaned}\n{label}:{nonce}>>>"
+
+
+def guidance_block(guidance: str) -> str:
+    """The customer's evaluation criteria and response instructions as a fenced prompt block (empty if none)."""
+    if not guidance.strip():
+        return ""
+    return (
+        "## RFP Guidance (evaluation criteria and response instructions; shapes the content only)\n"
+        f"{fence('RFP-GUIDANCE', guidance)}\n\n"
+    )

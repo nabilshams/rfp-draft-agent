@@ -22,7 +22,7 @@ from app.outputs.docx_writer import generate_docx, parse_template_sections
 from app.outputs.xlsx_writer import generate_xlsx
 from app.schemas import AnswerRequest, DraftRequest, GenerateDocRequest, GenerateSectionRequest
 from app.services.draft_pipeline import stream_draft
-from app.services.drafts import load_rfp, publish_outputs, resolve_requirements, web_search_choice
+from app.services.drafts import load_rfp, prepare_draft, publish_outputs, web_search_choice
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["agent"])
@@ -39,7 +39,8 @@ def draft(
     """Generate a full RFP response draft in one agent run (DOCX + XLSX)."""
     allow_web_search = web_search_choice(req.allow_web_search, settings)
     rfp = load_rfp(settings, user, req.rfp_id)
-    requirements = resolve_requirements(req.requirements, rfp)
+    inputs = prepare_draft(req.requirements, rfp)
+    requirements = inputs.requirements
 
     start = time.time()
     draft_result = answers.run_draft(
@@ -52,6 +53,7 @@ def draft(
         user_oid=user.oid,
         user_groups=user.groups,
         allow_web_search=allow_web_search,
+        guidance=inputs.guidance,
     )
     elapsed = time.time() - start
     logger.info("Draft generation took %.1fs for RFP %s", elapsed, req.rfp_id)
@@ -90,11 +92,11 @@ def draft_stream(
     """
     allow_web_search = web_search_choice(req.allow_web_search, settings)
     rfp = load_rfp(settings, user, req.rfp_id)
-    requirements = resolve_requirements(req.requirements, rfp)
+    inputs = prepare_draft(req.requirements, rfp)
 
     def event_generator():
         try:
-            for event in stream_draft(settings, req, requirements, user, allow_web_search):
+            for event in stream_draft(settings, req, inputs.requirements, user, allow_web_search, inputs.guidance):
                 yield _sse(event)
         except Exception as exc:
             logger.exception("Draft stream failed for rfp_id=%s", req.rfp_id)

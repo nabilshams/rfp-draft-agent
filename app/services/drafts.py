@@ -14,6 +14,7 @@ from app.auth.access import require_rfp_access
 from app.auth.entra import UserClaims
 from app.config import Settings
 from app.ingestion.pipeline import extract_requirements
+from app.ingestion.rfp_extract import guidance_text
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,28 @@ def load_rfp(settings: Settings, user: UserClaims, rfp_id: str, filename: str | 
     return RfpFile(filename=blob_name.rsplit("/", 1)[-1], data=data)
 
 
-def resolve_requirements(requested: list[dict[str, Any]], rfp: RfpFile) -> list[dict[str, Any]]:
-    """The requirements to answer: those the client sends (keeping the IDs it showed the user), else extracted."""
-    if requested:
-        return requested
-    return [r.model_dump() for r in extract_requirements(rfp.filename, rfp.data).requirements]
+@dataclass
+class DraftInputs:
+    requirements: list[dict[str, Any]]
+    # The customer's evaluation criteria and response instructions, from the RFP file itself (redacted).
+    guidance: str = ""
+
+
+def prepare_draft(requested: list[dict[str, Any]], rfp: RfpFile) -> DraftInputs:
+    """What a draft works from: the requirements to answer, and the RFP's own guidance on how to answer.
+
+    The requirements are those the client sends (keeping the IDs it showed the user), else extracted.
+    The guidance is always taken from the file, never from the request.
+    """
+    try:
+        extraction = extract_requirements(rfp.filename, rfp.data)
+    except Exception:
+        if not requested:
+            raise
+        logger.exception("Could not read guidance from %s; drafting without it", rfp.filename)
+        return DraftInputs(requirements=requested)
+    requirements = requested or [r.model_dump() for r in extraction.requirements]
+    return DraftInputs(requirements=requirements, guidance=guidance_text(extraction))
 
 
 def web_search_choice(requested: bool, settings: Settings) -> bool:
