@@ -16,6 +16,8 @@ import logging
 import re
 from typing import Any
 
+from app.telemetry import spans
+
 logger = logging.getLogger(__name__)
 
 REMOVED_MARKER = "[Statement removed: it contained figures that are not in the sources – recommend human review.]"
@@ -92,6 +94,10 @@ def ground_fields(item: dict[str, Any], fields: tuple[str, ...], sources: str) -
             removed.extend(gone)
     if removed:
         logger.warning("Removed %d unsupported figure(s) from generated text: %s", len(removed), removed[:10])
+        meter = spans.current_meter()
+        if meter:
+            meter.add_figures_removed(len(removed))
+        spans.annotate(figures__removed=len(removed))
     return removed
 
 

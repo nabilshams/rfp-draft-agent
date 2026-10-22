@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -12,6 +13,7 @@ from app.agents import grounding, kb_search, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_section
 from app.agents.untrusted import fence, guidance_block
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
@@ -68,17 +70,18 @@ def classify_sections(agent_id: str, section_names: list[str], items: list[tuple
     Falls back to putting everything in the first section if the reply is unusable.
     """
     summaries = fence("REQUIREMENTS", "\n".join(f"- {rid}: {text[:120]}" for rid, text in items))
-    result = runner.run_agent_prompt(
-        agent_id,
-        (
-            f"Classify each requirement below into the most appropriate document section.\n\n"
-            f"Available sections: {json.dumps(section_names)}\n\n"
-            f"Requirements:\n{summaries}\n\n"
-            f"Return ONLY a JSON object mapping section names to arrays of requirement IDs.\n"
-            f"Example: {{\"Executive Summary\": [\"F1\",\"F2\"], \"Technical Approach\": [\"F3\"]}}\n"
-            f"Every requirement must appear in exactly one section."
-        ),
-    )
+    with spans.stage("section.classify", requirements__total=len(items), sections=len(section_names)):
+        result = runner.run_agent_prompt(
+            agent_id,
+            (
+                f"Classify each requirement below into the most appropriate document section.\n\n"
+                f"Available sections: {json.dumps(section_names)}\n\n"
+                f"Requirements:\n{summaries}\n\n"
+                f"Return ONLY a JSON object mapping section names to arrays of requirement IDs.\n"
+                f"Example: {{\"Executive Summary\": [\"F1\",\"F2\"], \"Technical Approach\": [\"F3\"]}}\n"
+                f"Every requirement must appear in exactly one section."
+            ),
+        )
     section_map = parse_section_map(result.text, section_names, [rid for rid, _ in items]) if result.completed else {}
     return section_map or {section_names[0]: [rid for rid, _ in items]}
 
@@ -232,6 +235,12 @@ def generate_section_narrative_from_answers(
     )
 
 
+def _written(generate: Callable[..., dict[str, Any]], job: dict[str, Any]) -> dict[str, Any]:
+    """One section narrative, recorded as a ``section.narrative`` span."""
+    with spans.stage("section.narrative", requirements__total=len(job.get("req_ids", []))):
+        return generate(**job)
+
+
 def write_sections(
     jobs: list[dict[str, Any]], generate: Callable[..., dict[str, Any]], workers: int
 ) -> Iterator[dict[str, Any]]:
@@ -239,12 +248,14 @@ def write_sections(
     if workers <= 1 or len(jobs) <= 1:
         for job in jobs:
             logger.info("Writing section '%s'", job["section_name"])
-            yield generate(**job)
+            yield _written(generate, job)
         return
 
     logger.info("Writing %d sections in parallel (workers=%d)", len(jobs), workers)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(generate, **job): job for job in jobs}
+        # Each worker runs in a copy of the caller's context, so its spans stay in the draft's trace and its
+        # tokens are counted in the draft's meter.
+        futures = {pool.submit(contextvars.copy_context().run, _written, generate, job): job for job in jobs}
         for future in concurrent.futures.as_completed(futures):
             job = futures[future]
             try:

@@ -1,0 +1,21 @@
+// Cost and size of each draft (one row per draft). Run in Application Insights > Logs, or the Log Analytics workspace.
+// Cost is an estimate from token counts and the MODEL_*_PRICE_PER_MILLION settings, not an Azure bill.
+AppDependencies
+| where TimeGenerated > ago(7d) and Name == "draft"
+| extend p = Properties
+| project
+    TimeGenerated,
+    job = tostring(p["job.id"]),
+    rfp = tostring(p["rfp.id"]),
+    approach = tostring(p["approach"]),
+    outcome = tostring(p["outcome"]),
+    requirements = toint(p["requirements.total"]),
+    answered = toint(p["requirements.done"]),
+    model_calls = toint(p["llm.calls"]),
+    input_tokens = tolong(p["llm.input_tokens"]),
+    output_tokens = tolong(p["llm.output_tokens"]),
+    cost_usd = todouble(p["llm.cost_usd"]),
+    figures_removed = toint(p["figures.removed"]),
+    seconds = DurationMs / 1000.0
+| extend cost_per_requirement_usd = iff(answered > 0, cost_usd / answered, real(null))
+| order by TimeGenerated desc

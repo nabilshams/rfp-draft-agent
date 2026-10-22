@@ -228,7 +228,7 @@ def _run_job(
             return
         live.update(status="running")
 
-        events = stream_draft(settings, req, requirements, user, allow_web_search, guidance)
+        events = stream_draft(settings, req, requirements, user, allow_web_search, guidance, job.id)
         for event in events:
             live.update(_record(event))
             if store.cancel_requested(job.id):
