@@ -152,8 +152,9 @@ docker-compose up --build
 pytest tests/ -v --cov=app
 ```
 
-CI fails if coverage of `app/` drops below the `fail_under` threshold in `pyproject.toml`. The UI escaping tests
-run the helpers in `app/static/safe.js` with Node.js and are skipped if it isn't installed.
+CI fails if coverage of `app/` drops below the `fail_under` threshold in `pyproject.toml`. The UI tests run the
+helpers in `app/static/safe.js` and the HTML builders in `app/static/render.js` with Node.js (escaping, project views)
+and are skipped if it isn't installed.
 
 ### 6. Run the demo
 
@@ -530,6 +531,18 @@ metered separately. A draft makes about one model call per requirement, plus a f
 
 ### The project ledger
 
+**In the web UI.** On the *RFP Response* tab, "Your projects" lists the projects you own or that are shared with
+your groups. Upload an RFP and press **Create project** (give it a name, and optionally group IDs to share it with):
+its requirements are extracted into a project that lives on the server. Each requirement shows its status (*No answer
+yet*, *Drafted*, *Edited*, *Approved*), anchor, and answer with its version, author and time. You can **write or edit
+an answer** (saved as a new version; the earlier one is kept), **approve** it, see all **versions** and **restore**
+one, read a requirement's **history** or the project's **recent activity**, **draft** the unanswered requirements
+(answers appear as they are saved; you can leave, cancel, or draft again to carry on) or **redraft** one requirement.
+The address bar names the open project (`#project=<id>`), so reloading, or sending the link to a colleague who has
+access, shows the same state. The page refreshes itself every 15 seconds and never overwrites an answer you are
+typing; saving over a colleague's newer change is refused with a message and their version is shown. If the server has
+no ledger, the page works as before with its state in the browser.
+
 Projects, requirements, answer versions and the audit trail are stored in **Azure Cosmos DB for NoSQL** (serverless),
 created by `infra/modules/cosmos.bicep`:
 
@@ -855,7 +868,7 @@ rfp-draft-agent/
 │   ├── routers/                   # One module per area: ops, rfp, draft, jobs, projects, kb, outputs, template
 │   ├── ledger/                    # Project ledger: store (Cosmos DB / memory), service, drafting, schemas, smoke check
 │   ├── services/                  # Shared steps: RFP loading/publishing, draft pipeline, background jobs, KB access, uploads
-│   ├── static/                    # Web UI: index.html, app.css, app.js, safe.js (escaping helpers)
+│   ├── static/                    # Web UI: index.html, app.css, app.js, project.js (projects), render.js (HTML builders), safe.js (escaping helpers)
 │   ├── auth/
 │   │   ├── entra.py               # Authentication (disabled / Easy Auth headers / Entra JWT)
 │   │   ├── access.py              # Ownership, sharing and admin rules
