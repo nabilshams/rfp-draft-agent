@@ -14,17 +14,9 @@ let templateSectionsData = [];
 
 const $ = id => document.getElementById(id);
 
-// ── Safe output helpers (esc and safeUrl come from safe.js) ──
+// ── Safe output helpers (esc and safeUrl come from safe.js; the HTML builders and their constants from render.js) ──
 
-const MEETS_CLASSES = { Yes: 'meets-yes', Partial: 'meets-partial', No: 'meets-no' };
-const meetsLabel = meets => (meets in MEETS_CLASSES ? meets : 'No');
-const PRIORITY_CLASSES = { mandatory: 'badge-mandatory', preferred: 'badge-preferred' };
-const priorityClass = priority => PRIORITY_CLASSES[priority] || 'badge-standard';
 const num = value => (Number.isFinite(Number(value)) ? Number(value) : 0);
-
-function normReqId(id) { return String(id ?? '').trim(); }
-const respDomId = id => 'resp-' + encodeURIComponent(normReqId(id));
-const blockDomId = id => 'req-block-' + encodeURIComponent(normReqId(id));
 const outputUrl = (rfpId, file) => API + '/outputs/' + encodeURIComponent(rfpId) + '/' + file;
 
 /** A readable message from a failed fetch (the API reports errors as {"detail": ...}). */
@@ -229,7 +221,7 @@ $('btnExtract').addEventListener('click', async () => {
   setLoadingText(loading, mode === 'ai' ? 'AI is extracting requirements...' : 'Parsing document locally...');
   loading.classList.add('visible');
   $('btnExtract').disabled = true;
-  await extractReqs(mode);
+  await (projectMode ? createProjectFromRfp(mode) : extractReqs(mode));
   loading.classList.remove('visible');
 });
 
@@ -286,38 +278,7 @@ function renderSingleResponse(resp) {
   if (!el) return;
   el.style.display = 'block';
 
-  const meets = meetsLabel(resp.meets);
-  const evidence = (resp.evidence || []).map(e => {
-    const url = safeUrl(e.source_url);
-    // A knowledge-base reference link opens the document in the app; for a PDF, at the page the evidence is on
-    const target = url && e.page && new URL(url).pathname.startsWith('/kb/doc/') ? url + '#page=' + Number(e.page) : url;
-    const title = esc(e.title || (url ? 'Source' : ''));
-    const link = url
-      ? '<a href="' + esc(target) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary)">' + title + '</a>'
-      : title;
-    const quote = e.quote ? ' &mdash; <em>"' + esc(String(e.quote).substring(0, 150)) + '"</em>' : '';
-    const tag = e.source_type
-      ? ' <span class="badge" style="font-size:10px" title="How far this source should be trusted">' +
-        esc(String(e.source_type).replace('_', ' ')) + '</span>'
-      : '';
-    const where = [e.effective_date, e.version && ('v' + e.version), e.section, e.page && ('p. ' + e.page)]
-      .filter(Boolean).map(esc).join(' &middot; ');
-    const place = where ? ' <span style="color:var(--text-muted)">(' + where + ')</span>' : '';
-    return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + link + tag + place + quote + '</li>';
-  }).join('');
-  const listed = (label, items, color) => (items || []).length
-    ? '<div style="margin-top:4px"><strong style="font-size:11px">' + label + ':</strong> <span style="font-size:11px' +
-      (color ? ';color:' + color : '') + '">' + items.map(esc).join('; ') + '</span></div>'
-    : '';
-
-  el.innerHTML =
-    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
-      '<span style="font-weight:700;font-size:13px" class="' + MEETS_CLASSES[meets] + '">' + esc(meets) + '</span>' +
-      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span></div>' +
-    '<div style="font-size:12px;line-height:1.6;margin-bottom:6px">' + esc(resp.answer_markdown || '') + '</div>' +
-    (evidence ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evidence + '</ul></div>' : '') +
-    (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
-    listed('Assumptions', resp.assumptions) + listed('Risks', resp.risks, 'var(--error)');
+  el.innerHTML = answerBodyHtml(resp);
   el.closest('.req-block')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -450,6 +411,7 @@ async function runDraftJob(body, stream) {
 }
 
 $('btnCancelDraft').addEventListener('click', async () => {
+  if (projectMode && currentProject) return cancelProjectDraft();
   if (!activeJobId) return;
   $('btnCancelDraft').disabled = true;
   try { await postJson('/drafts/' + encodeURIComponent(activeJobId) + '/cancel', {}); }
@@ -457,6 +419,7 @@ $('btnCancelDraft').addEventListener('click', async () => {
 });
 
 $('btnDraft').addEventListener('click', async () => {
+  if (projectMode && currentProject) return startProjectDraft();
   const loading = $('draftLoading'), button = $('btnDraft');
   loading.classList.add('visible');
   button.disabled = true;

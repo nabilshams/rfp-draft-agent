@@ -63,7 +63,8 @@ class TestEscapingHelpers:
 
 class TestPageStructure:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    scripts = {name: (STATIC / name).read_text(encoding="utf-8") for name in ("app.js", "render.js", "project.js")}
+    js = "\n".join(scripts.values())
 
     def test_the_page_has_no_inline_scripts_or_event_handlers(self):
         assert not re.search(r"<script(?![^>]*\bsrc=)", self.html), "inline <script> would be blocked by the CSP"
@@ -74,8 +75,10 @@ class TestPageStructure:
         assert not re.search(r"\son[a-z]+\s*=", self.js)
         assert not re.search(r"\b(eval|document\.write)\s*\(|new Function\(", self.js)
 
-    def test_the_scripts_load_from_static(self):
-        assert re.findall(r'<script src="([^"]+)"', self.html) == ["/static/safe.js", "/static/app.js"]
+    def test_the_scripts_load_from_static_in_dependency_order(self):
+        assert re.findall(r'<script src="([^"]+)"', self.html) == [
+            "/static/safe.js", "/static/render.js", "/static/app.js", "/static/project.js",
+        ]
 
     def test_links_built_from_model_output_go_through_safe_url(self):
         # evidence links come from the model: the href must be the sanitised URL

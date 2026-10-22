@@ -75,6 +75,11 @@
 
   <!-- RFP -->
   <div class="tab-content" id="tab-rfp">
+    <div class="card" id="cardProjects" style="display:none">
+      <h2>Your projects</h2>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">A project keeps an RFP's requirements, answers (every version) and history on the server, so you can close the page, come back, and share the work with your team.</p>
+      <div id="projectList"></div>
+    </div>
     <div class="card">
       <h2>Step 1: Upload the RFP</h2>
       <div class="upload-zone" id="rfpUploadZone"><div class="icon">&#128196;</div><p>Drag &amp; drop the RFP you need to respond to</p><p style="font-size:11px;color:#999;margin-top:3px">PDF, DOCX, XLSX, or CSV</p><div class="filename" id="rfpFileName" style="display:none"></div></div>
@@ -101,11 +106,24 @@
           </div>
         </label>
       </div>
+      <div id="projectCreateRow" style="display:none;margin-bottom:14px">
+        <div class="form-row">
+          <div><label>Project name</label><input type="text" id="projectName" maxlength="200" placeholder="Defaults to the file name"></div>
+          <div><label>Share with groups (optional)</label><input type="text" id="projectGroups" placeholder="Group IDs, comma-separated. Empty keeps it private to you."></div>
+        </div>
+      </div>
       <button class="btn btn-primary" id="btnExtract">Extract Requirements</button>
       <div class="loading" id="extractLoading"><div class="spinner"></div><span>Extracting requirements...</span></div>
     </div>
     <div class="card" id="cardExtract" style="display:none">
-      <h2>Step 2: Extracted Requirements</h2>
+      <h2 id="extractTitle">Step 2: Extracted Requirements</h2>
+      <div id="projectBar" style="display:none;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="btnProjectBack">&larr; All projects</button>
+        <button class="btn btn-secondary btn-sm" id="btnProjectRefresh">Refresh</button>
+        <button class="btn btn-secondary btn-sm" id="btnProjectActivity">Recent activity</button>
+        <button class="btn btn-danger btn-sm" id="btnDeleteProject" style="display:none">Delete project</button>
+      </div>
+      <div id="projectActivity"></div>
       <div id="extractSummary"></div>
       <h3>Requirements and questions <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(responses will appear under each item after drafting)</span></h3>
       <div id="reqList"></div>
@@ -122,6 +140,7 @@
       </div>
       <label id="draftWebRow" class="web-opt" style="display:none"><input type="checkbox" id="draftWebSearch"> Allow web search (Bing) <span class="web-note">The text of each requirement is sent to Bing, outside the Azure compliance boundary. Leave off for confidential RFPs.</span></label>
       <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Uses the approach configured in the <strong>Response Template</strong> tab. Current: <span id="currentApproachLabel">Per Requirement</span></p>
+      <p id="projectDraftNote" style="display:none;font-size:11px;color:#8a6d00;margin-bottom:6px">In a project, each requirement's answer is saved as it is produced, and a draft only does the requirements that have no answer yet, so you can stop and carry on. Section narratives are not saved in a project yet; the documents contain the per-requirement answers.</p>
       <div class="loading" id="draftLoading"><div class="spinner"></div><span>Generating RFP response... This may take several minutes.</span><button class="btn btn-secondary btn-sm" id="btnCancelDraft" style="display:none;margin-left:auto">Cancel</button></div>
     </div>
     <div class="card" id="cardSectionNarratives" style="display:none">
@@ -264,6 +283,8 @@
 <div class="toast" id="toast"></div>
 
 <script src="/static/safe.js"></script>
+<script src="/static/render.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/project.js"></script>
 </body>
 </html>
