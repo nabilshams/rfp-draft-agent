@@ -11,7 +11,7 @@ from typing import Any
 from app.agents import kb_search, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_section
-from app.agents.untrusted import fence
+from app.agents.untrusted import fence, guidance_block
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,7 @@ def generate_section_narrative(
     context: RetrievedContext,
     tone: str,
     agent_id: str,
+    guidance: str = "",
 ) -> dict[str, Any]:
     """Write one section narrative from the requirements it covers and the sources retrieved for them."""
     req_details = fence(
@@ -132,6 +133,7 @@ def generate_section_narrative(
             f"Weave the requirements naturally into the narrative. "
             f"Reference requirement IDs in brackets where relevant, e.g. [F1].\n\n"
             f"Use these sources for grounding:\n{context.block}\n\n"
+            f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
             f"{{\"section_name\": {json.dumps(section_name)}, "
             f"\"narrative_markdown\": \"<your section text>\", "
@@ -154,6 +156,7 @@ def generate_section_narrative_from_answers(
     section_answers: list[dict[str, Any]],
     tone: str,
     agent_id: str,
+    guidance: str = "",
 ) -> dict[str, Any]:
     """Write one section narrative by synthesizing answers that were already generated."""
     answers_digest = fence(
@@ -177,6 +180,7 @@ def generate_section_narrative_from_answers(
             f"in brackets where relevant, e.g. [F1].\n\n"
             f"Keep all factual claims from the original answers. Do not add new information.\n\n"
             f"--- Answers for this section ---\n\n{answers_digest}\n\n"
+            f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
             f"{{\"section_name\": {json.dumps(section_name)}, "
             f"\"narrative_markdown\": \"<coherent section text>\", "

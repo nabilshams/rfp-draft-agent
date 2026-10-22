@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 def draft_events(
-    req: DraftRequest, requirements: list[dict[str, Any]], user: UserClaims, allow_web_search: bool
+    req: DraftRequest,
+    requirements: list[dict[str, Any]],
+    user: UserClaims,
+    allow_web_search: bool,
+    guidance: str = "",
 ) -> Iterator[dict[str, Any]]:
     """The events of the chosen approach, in the shape the UI consumes."""
     common = {
@@ -35,6 +39,7 @@ def draft_events(
         "user_groups": user.groups,
         "user_context": req.context,
         "allow_web_search": allow_web_search,
+        "guidance": guidance,
     }
     if req.approach == "map_reduce":
         yield from strategies.stream_map_reduce(template_sections=parse_template_sections(), **common)
@@ -53,6 +58,7 @@ def stream_draft(
     requirements: list[dict[str, Any]],
     user: UserClaims,
     allow_web_search: bool,
+    guidance: str = "",
 ) -> Iterator[dict[str, Any]]:
     """``start``, the approach's events, then ``complete`` once the documents are stored.
 
@@ -62,7 +68,7 @@ def stream_draft(
 
     responses: list[dict[str, Any]] = []
     narratives: list[dict[str, Any]] = []
-    for event in draft_events(req, requirements, user, allow_web_search):
+    for event in draft_events(req, requirements, user, allow_web_search, guidance):
         if event["type"] == "response":
             logger.info("[RFP-TRACE] response requirement_id=%s", event["data"].get("requirement_id"))
             responses.append(event["data"])

@@ -227,23 +227,18 @@ $('btnExtract').addEventListener('click', async () => {
 function requirementBlock(req) {
   const category = req.category
     ? ' <span style="color:var(--text-muted);font-size:10px">[' + esc(req.category) + ']</span>' : '';
+  const kind = req.type === 'question'
+    ? '<span class="badge" style="margin-top:1px;background:#fff4ce;color:#8a6d00">question</span>' : '';
+  const anchor = req.anchor
+    ? '<span style="color:var(--text-muted);font-size:10px;white-space:nowrap" title="Where this is in the RFP">' + esc(req.anchor) + '</span>' : '';
   return '<div class="req-block" id="' + esc(blockDomId(req.id)) + '" style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">' +
     '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
       '<span style="font-weight:700;color:var(--primary);min-width:40px;font-size:12px">' + esc(req.id) + '</span>' +
-      '<span class="badge ' + priorityClass(req.priority) + '" style="margin-top:1px">' + esc(req.priority) + '</span>' + category +
-      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' +
+      kind + '<span class="badge ' + priorityClass(req.priority) + '" style="margin-top:1px">' + esc(req.priority) + '</span>' + category +
+      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' + anchor +
     '</div>' +
     '<div class="req-response" id="' + esc(respDomId(req.id)) + '" style="padding:10px 12px;font-size:12px;color:var(--text-muted);display:none">' +
       '<em>Response will appear here after draft generation...</em></div></div>';
-}
-
-function questionBlock(question, i) {
-  return '<div class="req-block" id="req-block-q' + i + '" style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden">' +
-    '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
-      '<span style="font-weight:700;color:#8a6d00;min-width:40px;font-size:12px">Q' + (i + 1) + '</span>' +
-      '<span style="flex:1;font-size:12px">' + esc(question) + '</span></div>' +
-    '<div class="req-response" id="resp-q' + i + '" style="padding:10px 12px;font-size:12px;color:var(--text-muted);display:none">' +
-      '<em>Response will appear here...</em></div></div>';
 }
 
 async function extractReqs(mode) {
@@ -252,21 +247,17 @@ async function extractReqs(mode) {
   try {
     const data = await postJson(mode === 'ai' ? '/rfp/extract-ai' : '/rfp/extract',
       { rfp_id: currentRfpId, filename: currentFilename });
+    // Questions are requirements too (type "question"): each is drafted and gets a response slot.
     extractedRequirements = (data.requirements || []).map((r, i) => ({ ...r, id: normReqId(r.id || ('R' + (i + 1))) }));
-    extractedQuestions = data.questions || [];
+    extractedQuestions = extractedRequirements.filter(r => r.type === 'question').map(r => r.text);
     extractedEvaluationCriteria = data.evaluation_criteria || [];
 
     $('extractSummary').innerHTML =
       '<div style="display:flex;gap:14px;font-size:12px;color:var(--text-muted)">' +
       '<span><strong>' + (data.sections?.length || 0) + '</strong> Sections</span>' +
-      '<span><strong>' + extractedRequirements.length + '</strong> Requirements</span>' +
+      '<span><strong>' + (extractedRequirements.length - extractedQuestions.length) + '</strong> Requirements</span>' +
       '<span><strong>' + extractedQuestions.length + '</strong> Questions</span></div>';
     $('reqList').innerHTML = extractedRequirements.map(requirementBlock).join('');
-
-    if (extractedQuestions.length) {
-      $('questionsSection').style.display = 'block';
-      $('questionsList').innerHTML = extractedQuestions.map(questionBlock).join('');
-    }
 
     toast('Extracted ' + extractedRequirements.length + ' requirements');
     $('cardDraft').style.display = 'block';
@@ -661,7 +652,7 @@ function buildDefaultPrompt(section) {
   }
 
   const keywords = tokenizeForPromptCoach(name + ' ' + (section.placeholder || ''));
-  const requirements = rankRelevantRequirements(keywords, extractedRequirements).slice(0, 10);
+  const requirements = rankRelevantRequirements(keywords, extractedRequirements.filter(r => r.type !== 'question')).slice(0, 10);
   const questions = rankRelevantTexts(keywords, extractedQuestions).slice(0, 5);
   const criteria = rankRelevantTexts(keywords, extractedEvaluationCriteria).slice(0, 5);
   const tone = $('draftTone')?.value || 'professional';

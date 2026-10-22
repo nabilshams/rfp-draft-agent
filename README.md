@@ -42,7 +42,7 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 
 | Feature | Details |
 |---|---|
-| **RFP Ingestion** | PDF (PyPDF2) and DOCX (python-docx) parsing; extracts sections, shall/must requirements, questions, evaluation criteria |
+| **RFP Ingestion** | PDF (PyPDF2), DOCX (python-docx, including tables) and spreadsheet parsing; extracts sections, shall/must requirements, questions (drafted like requirements), evaluation criteria, with a source anchor and stable ID for each item |
 | **Knowledge Base** | Blob → chunk → embed → Azure AI Search index with segmentation + DLAC fields |
 | **Grounded Drafting** | Azure AI Foundry Agent with AzureAISearchTool; hybrid (vector+semantic) retrieval; citations required |
 | **Compliance Matrix** | XLSX with data validation (Yes/Partial/No); evidence + source URLs |
@@ -195,13 +195,25 @@ curl -X POST http://localhost:8000/rfp/extract \
 {
   "sections": [...],
   "requirements": [
-    { "id": "a1b2c3d4", "text": "The vendor shall ...", "category": "compliance", "priority": "mandatory", ... }
+    { "id": "R1", "type": "requirement", "anchor": "¶2", "text": "The vendor shall ...", "category": "compliance", "priority": "mandatory", ... },
+    { "id": "T-2", "type": "question", "anchor": "Table 1, row 3", "text": "How do you handle data residency?", ... }
   ],
-  "questions": ["Does your platform support ...?"],
+  "questions": ["How do you handle data residency?"],
   "evaluation_criteria": [...],
   "response_instructions": {}
 }
 ```
+
+- Questions are requirements of `type: "question"`: they are drafted like any other requirement. `questions` repeats
+  their text for older clients.
+- `anchor` says where an item is in the RFP: `p. 3` (PDF page), `¶12` (Word paragraph), `Table 2, row 5` (a Word
+  table whose header has a "Requirement" or "Question" column, or any other table's text), or `Row 14` (spreadsheet
+  row; only the active sheet is read).
+- IDs are the RFP's own references when it has them (an ID column); otherwise `R1`, `R2`, ... in document order, so
+  extracting a file again gives the same IDs. A repeated reference gets a suffix (`3.1`, `3.1-2`).
+- A draft also reads the RFP's evaluation criteria and response instructions (length, format) from the file and
+  gives them to the model as guidance on the *content* of each answer. A request cannot supply its own guidance.
+- Everything in the result is redacted, including keywords and categories.
 
 ### `POST /draft`
 Generate a full RFP response draft (DOCX + XLSX) in one request. Bound to a single request, so a large RFP can hit

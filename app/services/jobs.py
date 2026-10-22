@@ -217,6 +217,7 @@ def _run_job(
     requirements: list[dict[str, Any]],
     user: UserClaims,
     allow_web_search: bool,
+    guidance: str = "",
 ) -> None:
     job = live.job
     store = JobStore(settings)
@@ -227,7 +228,7 @@ def _run_job(
             return
         live.update(status="running")
 
-        events = stream_draft(settings, req, requirements, user, allow_web_search)
+        events = stream_draft(settings, req, requirements, user, allow_web_search, guidance)
         for event in events:
             live.update(_record(event))
             if store.cancel_requested(job.id):
@@ -258,6 +259,7 @@ def submit(
     req: DraftRequest,
     requirements: list[dict[str, Any]],
     allow_web_search: bool,
+    guidance: str = "",
 ) -> Job:
     """Store a new job and start it. Returns it in the ``queued`` state."""
     job = Job(id=uuid.uuid4().hex, owner_oid=user.oid, rfp_id=req.rfp_id, approach=req.approach, total=len(requirements))
@@ -275,7 +277,9 @@ def submit(
     try:
         JobStore(settings).save(job)
         live.start_heartbeat()
-        _get_executor(settings).submit(_run_job, settings, live, req, requirements, user, allow_web_search)
+        _get_executor(settings).submit(
+            _run_job, settings, live, req, requirements, user, allow_web_search, guidance
+        )
     except Exception:
         _finish(live)
         raise

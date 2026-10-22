@@ -9,7 +9,7 @@ from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
 from app.schemas import DraftRequest
 from app.services import jobs
-from app.services.drafts import load_rfp, resolve_requirements, web_search_choice
+from app.services.drafts import load_rfp, prepare_draft, web_search_choice
 from app.validation import JobId
 
 router = APIRouter(prefix="/drafts", tags=["agent"])
@@ -44,9 +44,9 @@ def start_draft(
     """
     allow_web_search = web_search_choice(req.allow_web_search, settings)
     rfp = load_rfp(settings, user, req.rfp_id)
-    requirements = resolve_requirements(req.requirements, rfp)
+    inputs = prepare_draft(req.requirements, rfp)
 
-    job = jobs.submit(settings, user, req, requirements, allow_web_search)
+    job = jobs.submit(settings, user, req, inputs.requirements, allow_web_search, inputs.guidance)
     response.headers["Location"] = f"/drafts/{job.id}"
     return {"job_id": job.id, "status": job.status, "status_url": f"/drafts/{job.id}"}
 

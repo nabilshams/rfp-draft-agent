@@ -9,7 +9,7 @@ from typing import Any
 from app.agents import kb_search, lifecycle, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
-from app.agents.untrusted import fence
+from app.agents.untrusted import fence, guidance_block
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ def run_draft(
     user_oid: str,
     user_groups: list[str] | None = None,
     allow_web_search: bool = False,
+    guidance: str = "",
 ) -> dict[str, Any]:
     """Submit the full RFP to the draft agent in one run and return the draft JSON."""
 
@@ -99,6 +100,7 @@ def run_draft(
         f"  - \"followups\": array of strings\n\n"
         f"Use the following retrieved sources to ground your answers:\n\n"
         f"{context.block}\n\n"
+        f"{guidance_block(guidance)}"
         f"Here are the requirements to respond to:\n{fence('REQUIREMENTS', requirements_json)}"
     )
 
@@ -145,6 +147,7 @@ def answer_single_requirement(
     agent_id: str,
     user_context: str = "",
     allow_web_search: bool = False,
+    guidance: str = "",
 ) -> dict[str, Any]:
     """Process a single requirement through the agent and return structured response."""
     req_id = requirement.get("id", "?")
@@ -167,6 +170,7 @@ def answer_single_requirement(
         (
             f"Respond to this single RFP requirement. Tone: {tone}.\n\n"
             f"{context_preamble}"
+            f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object (no markdown wrapping) with these fields:\n"
             f"- \"requirement_id\": {json.dumps(str(req_id))}\n"
             f"- \"requirement_text\": the original requirement text\n"
