@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     search_semantic_ranker: bool = Field(False, alias="SEARCH_SEMANTIC_RANKER")
     # Cap on documents shared across many requirements in one prompt (full draft, section narratives).
     search_max_context_docs: int = Field(15, alias="SEARCH_MAX_CONTEXT_DOCS", ge=1, le=50)
+    # Ranking by provenance (see app.ingestion.provenance). Weights multiply the search score; 1.0 changes nothing.
+    # Candidates are fetched SEARCH_CANDIDATE_FACTOR times wider than SEARCH_TOP_K, re-ordered, then cut to top-k.
+    kb_tier_weights: str = Field(
+        "authoritative=1.3,approved_answer=1.15,historical=1.0,external=0.9", alias="KB_TIER_WEIGHTS"
+    )
+    kb_status_weights: str = Field(
+        "approved=1.0,unreviewed=1.0,draft=0.8,superseded=0.5", alias="KB_STATUS_WEIGHTS"
+    )
+    # Age at which a document's freshness weight is halfway between 1.0 and the floor; 0 turns freshness off.
+    kb_freshness_half_life_days: float = Field(730, alias="KB_FRESHNESS_HALF_LIFE_DAYS", ge=0)
+    kb_freshness_floor: float = Field(0.7, alias="KB_FRESHNESS_FLOOR", gt=0, le=1)
+    search_candidate_factor: int = Field(3, alias="SEARCH_CANDIDATE_FACTOR", ge=1, le=10)
 
     # ── Optional ──────────────────────────────────────────
     embedding_model_deployment_name: str = Field(
@@ -103,6 +115,25 @@ class Settings(BaseSettings):
                 "ENTRA_TENANT_ID=dev is no longer supported."
             )
         return self
+
+    @model_validator(mode="after")
+    def _check_ranking_weights(self) -> Settings:
+        from app.ingestion.provenance import parse_weights
+
+        parse_weights(self.kb_tier_weights, "KB_TIER_WEIGHTS")
+        parse_weights(self.kb_status_weights, "KB_STATUS_WEIGHTS")
+        return self
+
+    def ranking_policy(self):
+        """How retrieval weighs source type, approval status and age (see ``app.ingestion.provenance``)."""
+        from app.ingestion.provenance import RankingPolicy, parse_weights
+
+        return RankingPolicy(
+            tier_weights=parse_weights(self.kb_tier_weights, "KB_TIER_WEIGHTS"),
+            status_weights=parse_weights(self.kb_status_weights, "KB_STATUS_WEIGHTS"),
+            half_life_days=self.kb_freshness_half_life_days,
+            freshness_floor=self.kb_freshness_floor,
+        )
 
     @property
     def admin_oid_set(self) -> frozenset[str]:

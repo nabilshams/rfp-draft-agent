@@ -272,7 +272,9 @@ class TestKbUpload:
 
         assert response.status_code == 200, response.text
         # an unshared document stores an empty group list, which Azure reads back as None
-        assert world.storage.kb.blobs[KB_BLOB].metadata == {"owner_oid": "user-a", "shared_groups": None}
+        metadata = world.storage.kb.blobs[KB_BLOB].metadata
+        assert {k: metadata[k] for k in ("owner_oid", "shared_groups")} == {"owner_oid": "user-a", "shared_groups": None}
+        assert metadata["kb_source_type"] == "historical"  # nothing is promoted by accident
         (ingest,) = world.ingests
         assert ingest["oids"] == ["user-a"]
         assert ingest["groups"] == []

@@ -16,6 +16,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from app.ingestion.provenance import describe_source
+
 logger = logging.getLogger(__name__)
 
 _HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
@@ -83,7 +85,8 @@ def generate_xlsx(
             if ev.get("quote"):
                 evidence_parts.append(ev["quote"])
             if ev.get("title"):
-                evidence_parts.append(f"[{ev['title']}]")
+                label = describe_source(ev)
+                evidence_parts.append(f"[{ev['title']}{' (' + label + ')' if label else ''}]")
             if ev.get("source_url"):
                 source_urls.append(ev["source_url"])
 

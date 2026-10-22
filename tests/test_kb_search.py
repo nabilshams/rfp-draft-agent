@@ -73,14 +73,14 @@ class TestSearchKb:
 
         (call,) = client.calls
         assert call["search_text"] == "encryption at rest"
-        assert call["top"] == 5
+        assert call["top"] == 15  # top-k (5) widened by the candidate factor (3), then cut back after re-ranking
         assert "query_type" not in call
         (vector_query,) = call["vector_queries"]
         assert vector_query.vector == [0.1, 0.2]
         assert vector_query.fields == "contentVector"
         # The neighbour count must really reach the SDK model (a wrong parameter name is silently dropped).
         neighbours = getattr(vector_query, "k", None) or getattr(vector_query, "k_nearest_neighbors", None)
-        assert neighbours == 10
+        assert neighbours == 30
         # Access filters must apply before the nearest-neighbour cut-off, not after it.
         assert call["vector_filter_mode"] == VectorFilterMode.PRE_FILTER
         assert "client_id eq 'acme'" in call["filter"]
@@ -107,7 +107,7 @@ class TestSearchKb:
         client = search(FakeSearchClient(), search_top_k=8)
         kb_search.search_kb(query="q", **ACCESS)
         kb_search.search_kb(query="q", top_k=3, **ACCESS)
-        assert [c["top"] for c in client.calls] == [8, 3]
+        assert [c["top"] for c in client.calls] == [24, 9]
 
     def test_results_are_mapped_to_plain_dicts(self, search):
         search(FakeSearchClient([hit(score=0.5, reranker=2.5)]))
@@ -118,6 +118,16 @@ class TestSearchKb:
             "source_url": "https://kb/acme/p1/cloud/guide.pdf",
             "score": 0.5,
             "reranker_score": 2.5,
+            # a chunk indexed before provenance existed: no type, no date; neutral weight (no tier, middling freshness)
+            "source_type": "",
+            "authority": "",
+            "effective_date": "",
+            "version": "",
+            "approval_status": "",
+            "section": "",
+            "page": None,
+            "weight": 0.85,
+            "rank_score": 2.125,
         }
 
     def test_retrieved_chunks_are_redacted_but_their_urls_are_not(self, search):

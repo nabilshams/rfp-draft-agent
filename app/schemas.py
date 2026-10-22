@@ -42,6 +42,23 @@ class IngestRequest(BaseModel):
 
     blob_name: KbBlobName
     redaction_level: str = "standard"
+    # Provenance changes recorded on the document before it is re-ingested; left out = keep the current value.
+    source_type: str | None = None
+    effective_date: str | None = None
+    version: str | None = None
+    authority: str | None = None
+    owner_name: str | None = None
+    approval_status: str | None = None
+
+    def provenance_fields(self) -> dict[str, str | None]:
+        return {
+            "source_type": self.source_type,
+            "effective_date": self.effective_date,
+            "version": self.version,
+            "authority": self.authority,
+            "owner": self.owner_name,
+            "approval_status": self.approval_status,
+        }
 
 
 class GenerateDocRequest(BaseModel):

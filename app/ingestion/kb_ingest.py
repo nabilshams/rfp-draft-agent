@@ -10,7 +10,9 @@ from __future__ import annotations
 import functools
 import hashlib
 import logging
-from datetime import UTC, datetime
+import re
+from bisect import bisect_right
+from dataclasses import dataclass
 from typing import Any
 
 import tiktoken
@@ -31,10 +33,13 @@ from azure.search.documents.indexes.models import (
 
 from app import azure_clients
 from app.config import get_settings
+from app.ingestion.provenance import Provenance
 from app.ingestion.redaction import get_redaction_engine
-from app.ingestion.rfp_extract import extract_text
+from app.ingestion.rfp_extract import extract_text, parse_pdf
 
 logger = logging.getLogger(__name__)
+
+_MAX_SECTION_CHARS = 150
 
 @functools.lru_cache(maxsize=1)
 def _tokenizer() -> tiktoken.Encoding:
@@ -72,12 +77,24 @@ def get_index_schema(index_name: str) -> SearchIndex:
             filterable=True,
         ),
         SimpleField(name="redaction_level", type=SearchFieldDataType.String, filterable=True),
+        # Kept because an index field can't be dropped in place; it now holds the document's effective date.
         SimpleField(
             name="last_reviewed_date",
             type=SearchFieldDataType.DateTimeOffset,
             filterable=True,
             sortable=True,
         ),
+        # Provenance (see app.ingestion.provenance) and where in the document the chunk came from
+        SimpleField(name="source_type", type=SearchFieldDataType.String, filterable=True, facetable=True),
+        SimpleField(name="authority", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(
+            name="effective_date", type=SearchFieldDataType.DateTimeOffset, filterable=True, sortable=True
+        ),
+        SimpleField(name="version", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="owner", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="approval_status", type=SearchFieldDataType.String, filterable=True, facetable=True),
+        SimpleField(name="section", type=SearchFieldDataType.String),
+        SimpleField(name="page", type=SearchFieldDataType.Int32, filterable=True),
     ]
 
     vector_search = VectorSearch(
@@ -132,41 +149,90 @@ def _ensure_index_once() -> None:
 # ── Chunking ──────────────────────────────────────────────
 
 
-def _chunk_text(text: str, max_tokens: int = 1000, overlap_tokens: int = 150) -> list[str]:
-    """Split *text* into chunks of roughly *max_tokens* with overlap."""
+@dataclass(frozen=True)
+class Chunk:
+    text: str
+    start: int = 0  # offset of the chunk in the document text
+    section: str = ""
+    page: int | None = None
+
+
+_HEADING_RE = re.compile(r"^(?:#{1,4}\s|(?:\d+\.)+\s)", re.MULTILINE)
+
+
+def _chunk_text_spans(text: str, max_tokens: int = 1000, overlap_tokens: int = 150) -> list[tuple[str, int]]:
+    """Split *text* into chunks of roughly *max_tokens* with overlap, each with its offset in *text*."""
     tokens = _tokenizer().encode(text)
-    chunks: list[str] = []
+    overlap_tokens = min(overlap_tokens, max_tokens // 2)  # the window must always move forward
+    chunks: list[tuple[str, int]] = []
     start = 0
     while start < len(tokens):
         end = min(start + max_tokens, len(tokens))
-        chunk_tokens = tokens[start:end]
-        chunks.append(_tokenizer().decode(chunk_tokens))
+        offset = len(_tokenizer().decode(tokens[:start])) if start else 0
+        chunks.append((_tokenizer().decode(tokens[start:end]), min(offset, len(text))))
         start += max_tokens - overlap_tokens
     return chunks
 
 
-def _chunk_by_headings(text: str, max_tokens: int = 1000) -> list[str]:
-    """Try to split on markdown-style or numbered headings first,
-    falling back to token-based chunking if a section is too long."""
-    import re
+def _chunk_text(text: str, max_tokens: int = 1000, overlap_tokens: int = 150) -> list[str]:
+    """Split *text* into chunks of roughly *max_tokens* with overlap."""
+    return [chunk for chunk, _ in _chunk_text_spans(text, max_tokens, overlap_tokens)]
 
-    heading_re = re.compile(r"^(?:#{1,4}\s|(?:\d+\.)+\s)", re.MULTILINE)
-    matches = list(heading_re.finditer(text))
+
+def _heading_line(text: str) -> str:
+    line = text.split("\n", 1)[0].strip().lstrip("#").strip()
+    return line[:_MAX_SECTION_CHARS]
+
+
+def chunk_document(
+    text: str, page_starts: list[tuple[int, int]] | None = None, max_tokens: int = 1000
+) -> list[Chunk]:
+    """Chunks of *text* that remember their section heading and (for paged documents) page.
+
+    Text is split on markdown-style or numbered headings first, falling back to token-based chunking when a
+    section is too long or the text has no headings. *page_starts* are ``(offset, page number)`` pairs.
+    Text before the first heading is kept.
+    """
+    matches = list(_HEADING_RE.finditer(text))
+    headings = [(m.start(), _heading_line(text[m.start() :])) for m in matches]
+    pages = page_starts or []
+    page_offsets = [offset for offset, _ in pages]
+
+    def section_at(offset: int) -> str:
+        index = bisect_right([h[0] for h in headings], offset) - 1
+        return headings[index][1] if index >= 0 else ""
+
+    def page_at(offset: int) -> int | None:
+        index = bisect_right(page_offsets, offset) - 1
+        return pages[index][1] if index >= 0 else None
+
+    def make(piece: str, start: int) -> Chunk:
+        return Chunk(piece, start, section_at(start), page_at(start))
+
     if len(matches) < 2:
-        return _chunk_text(text, max_tokens)
+        return [make(piece, start) for piece, start in _chunk_text_spans(text, max_tokens)]
 
-    raw_sections: list[str] = []
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        raw_sections.append(text[m.start() : end].strip())
+    bounds = [m.start() for m in matches]
+    spans = [(bounds[i], bounds[i + 1] if i + 1 < len(bounds) else len(text)) for i in range(len(bounds))]
+    if bounds[0] > 0 and text[: bounds[0]].strip():
+        spans.insert(0, (0, bounds[0]))
 
-    chunks: list[str] = []
-    for sec in raw_sections:
-        if len(_tokenizer().encode(sec)) > max_tokens:
-            chunks.extend(_chunk_text(sec, max_tokens))
+    chunks: list[Chunk] = []
+    for start, end in spans:
+        piece = text[start:end].strip()
+        if not piece:
+            continue
+        offset = start + (len(text[start:end]) - len(text[start:end].lstrip()))
+        if len(_tokenizer().encode(piece)) > max_tokens:
+            chunks.extend(make(sub, offset + sub_start) for sub, sub_start in _chunk_text_spans(piece, max_tokens))
         else:
-            chunks.append(sec)
+            chunks.append(make(piece, offset))
     return chunks
+
+
+def _chunk_by_headings(text: str, max_tokens: int = 1000) -> list[str]:
+    """The chunk texts of :func:`chunk_document`."""
+    return [chunk.text for chunk in chunk_document(text, max_tokens=max_tokens)]
 
 
 # ── Embedding helper ──────────────────────────────────────
@@ -189,6 +255,37 @@ embed_texts = _embed_texts
 # ── Main ingest function ─────────────────────────────────
 
 
+def _redacted_text_and_pages(filename: str, data: bytes) -> tuple[str, list[tuple[int, int]]]:
+    """The document's redacted text and, for a PDF, where each page starts in it as ``(offset, page)``.
+
+    Pages are redacted one by one (and joined with a blank line, as the plain-text reader does) so that page
+    positions stay exact whatever redaction changes the length of.
+    """
+    engine = get_redaction_engine()
+    if not filename.lower().endswith(".pdf"):
+        result = engine.redact(extract_text(filename, data))
+        if result.redaction_count:
+            logger.info("Redacted %d patterns from %s", result.redaction_count, filename)
+        return result.sanitized_text, []
+
+    document = parse_pdf(data)
+    bounds = [offset for offset, _ in document.anchors] + [len(document.text) + 2]
+    parts: list[str] = []
+    page_starts: list[tuple[int, int]] = []
+    length = 0
+    redactions = 0
+    for (offset, label), end in zip(document.anchors, bounds[1:]):
+        result = engine.redact(document.text[offset : end - 2])
+        redactions += result.redaction_count
+        start = length + (2 if parts else 0)
+        page_starts.append((start, int(label.removeprefix("p. "))))
+        parts.append(result.sanitized_text)
+        length = start + len(result.sanitized_text)
+    if redactions:
+        logger.info("Redacted %d patterns from %s", redactions, filename)
+    return "\n\n".join(parts), page_starts
+
+
 def ingest_blob(
     blob_name: str,
     client_id: str,
@@ -197,12 +294,15 @@ def ingest_blob(
     oids: list[str] | None = None,
     groups: list[str] | None = None,
     redaction_level: str = "standard",
+    provenance: Provenance | None = None,
 ) -> int:
     """Download a single blob, redact, chunk, embed, and index it.
 
-    Returns the number of chunks indexed.
+    *provenance* (source type, dates, version, ...) is stored on every chunk; without it the document is indexed
+    as ``historical`` and ``unreviewed``. Returns the number of chunks indexed.
     """
     settings = get_settings()
+    provenance = provenance or Provenance()
 
     # 1. Download blob
     _ensure_index_once()
@@ -210,24 +310,19 @@ def ingest_blob(
     blob_data = container.download_blob(blob_name).readall()
 
     filename = blob_name.rsplit("/", 1)[-1]
-    raw_text = extract_text(filename, blob_data)
-    logger.info("Extracted %d chars from %s", len(raw_text), blob_name)
 
-    # 2. Redact
-    engine = get_redaction_engine()
-    result = engine.redact(raw_text)
-    sanitized = result.sanitized_text
-    if result.redaction_count:
-        logger.info("Redacted %d patterns from %s", result.redaction_count, blob_name)
+    # 2. Read and redact
+    sanitized, page_starts = _redacted_text_and_pages(filename, blob_data)
+    logger.info("Extracted %d chars from %s", len(sanitized), blob_name)
 
     # 3. Chunk
-    chunks = _chunk_by_headings(sanitized)
+    chunks = chunk_document(sanitized, page_starts)
     if not chunks:
         logger.warning("No chunks produced for %s", blob_name)
         return 0
 
     # 4. Embed
-    vectors = _embed_texts(chunks)
+    vectors = _embed_texts([chunk.text for chunk in chunks])
 
     # 5. Build documents
     source_url = f"{settings.azure_storage_account_url}/{settings.storage_kb_container}/{blob_name}"
@@ -237,7 +332,7 @@ def ingest_blob(
         documents.append(
             {
                 "id": doc_id,
-                "content": chunk,
+                "content": chunk.text,
                 "contentVector": vec,
                 "title": filename,
                 "source_url": source_url,
@@ -247,7 +342,9 @@ def ingest_blob(
                 "oids": oids or [],
                 "groups": groups or [],
                 "redaction_level": redaction_level,
-                "last_reviewed_date": datetime.now(UTC).isoformat(),
+                "section": chunk.section,
+                "page": chunk.page,
+                **provenance.to_index_fields(),
             }
         )
 

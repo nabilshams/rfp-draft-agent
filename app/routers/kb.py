@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated
 
 from azure.core.exceptions import ResourceNotFoundError
@@ -23,8 +24,15 @@ from app.auth.entra import UserClaims, get_current_user
 from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
 from app.ingestion import kb_ingest as ingestion
+from app.ingestion.provenance import provenance_from_metadata
 from app.schemas import IngestRequest
-from app.services.kb_access import delete_kb_chunks, existing_kb_acl, load_kb_document, require_kb_manage
+from app.services.kb_access import (
+    checked_provenance,
+    delete_kb_chunks,
+    existing_kb_document,
+    load_kb_document,
+    require_kb_manage,
+)
 from app.services.uploads import read_upload, validated_upload_filename
 from app.validation import KbBlobName, Segment
 
@@ -39,6 +47,12 @@ def kb_upload(
     project_id: Annotated[Segment, Form()] = "demo-project",
     solution_area: Annotated[Segment, Form()] = "general",
     share_with_groups: Annotated[str, Form()] = "",
+    source_type: Annotated[str | None, Form()] = None,
+    effective_date: Annotated[str | None, Form()] = None,
+    version: Annotated[str | None, Form()] = None,
+    authority: Annotated[str | None, Form()] = None,
+    owner_name: Annotated[str | None, Form()] = None,
+    approval_status: Annotated[str | None, Form()] = None,
     user: UserClaims = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
@@ -47,6 +61,11 @@ def kb_upload(
     The document is private to the uploader unless ``share_with_groups`` (comma-separated group IDs
     the uploader belongs to) is given. Uploading again replaces the document and its sharing; only
     the owner (or an administrator) can replace an existing document.
+
+    ``source_type`` (``authoritative``, ``approved_answer``, ``historical``, ``external``), ``effective_date``
+    (``YYYY-MM-DD``, default today), ``version``, ``authority``, ``owner_name`` and ``approval_status`` say how
+    far the document should be trusted and drive ranking at retrieval. Only an administrator can mark a source
+    ``authoritative``. A replaced document keeps the values it had for any field not given.
     """
     filename = validated_upload_filename(file, (".pdf", ".docx"))
     groups = resolve_share_groups(parse_group_list(share_with_groups), user, settings)
@@ -54,13 +73,28 @@ def kb_upload(
     blob_name = f"{client_id}/{project_id}/{solution_area}/{filename}"
     container = azure_clients.container(settings, settings.storage_kb_container)
 
-    exists, existing_acl = existing_kb_acl(container, blob_name)
+    exists, existing_acl, existing_provenance = existing_kb_document(container, blob_name)
     if exists:
         require_kb_manage(existing_acl, blob_name, user, settings)
     owner = existing_acl.owner if existing_acl else user.oid  # an admin replacing a file keeps its owner
+    provenance = checked_provenance(
+        user,
+        settings,
+        source_type=source_type,
+        effective_date=effective_date or "",  # a new upload is effective from today unless it says otherwise
+        version=version,
+        authority=authority,
+        owner=owner_name if owner_name is not None else (existing_provenance.owner or user.name),
+        approval_status=approval_status,
+        fallback_date=datetime.now(UTC),
+        base=existing_provenance if exists else None,
+        content_changed=exists,
+    )
 
     data = read_upload(file, settings)
-    container.upload_blob(name=blob_name, data=data, overwrite=True, metadata=kb_metadata(owner, groups))
+    container.upload_blob(
+        name=blob_name, data=data, overwrite=True, metadata=kb_metadata(owner, groups, provenance.to_metadata())
+    )
     logger.info("Uploaded KB doc %s (%d bytes)", blob_name, len(data))
 
     count = ingestion.ingest_blob(
@@ -70,6 +104,7 @@ def kb_upload(
         solution_area=solution_area,
         oids=[owner],
         groups=groups,
+        provenance=provenance,
     )
 
     return {
@@ -81,6 +116,7 @@ def kb_upload(
         "project_id": project_id,
         "solution_area": solution_area,
         "shared_with_groups": groups,
+        "provenance": provenance.to_dict(),
     }
 
 
@@ -94,14 +130,23 @@ def kb_ingest(
 
     Who can retrieve the indexed chunks comes from the blob's recorded owner and shared groups,
     never from the request. An administrator ingesting a document that has no recorded owner
-    becomes its owner.
+    becomes its owner. Provenance fields in the request (for example a new ``source_type`` or
+    ``effective_date``) are recorded on the document first; fields left out keep their current value.
     """
     container = azure_clients.container(settings, settings.storage_kb_container)
     acl = load_kb_document(container, req.blob_name, user, settings)
     require_kb_manage(acl, req.blob_name, user, settings)
-    if acl is None:
+    _, _, current = existing_kb_document(container, req.blob_name)
+    provenance = checked_provenance(
+        user, settings, base=current, fallback_date=datetime.now(UTC), **req.provenance_fields()
+    )
+    claiming = acl is None
+    if claiming:
         acl = KbAcl(owner=user.oid)
-        container.get_blob_client(req.blob_name).set_blob_metadata(kb_metadata(acl.owner, acl.groups))
+    if claiming or provenance != current:
+        container.get_blob_client(req.blob_name).set_blob_metadata(
+            kb_metadata(acl.owner, acl.groups, provenance.to_metadata())
+        )
 
     client_id, project_id, solution_area, _ = req.blob_name.split("/")
     count = ingestion.ingest_blob(
@@ -112,8 +157,9 @@ def kb_ingest(
         oids=[acl.owner],
         groups=list(acl.groups),
         redaction_level=req.redaction_level,
+        provenance=provenance,
     )
-    return {"indexed_chunks": count, "blob_name": req.blob_name}
+    return {"indexed_chunks": count, "blob_name": req.blob_name, "provenance": provenance.to_dict()}
 
 
 @router.get("/list")
@@ -131,6 +177,7 @@ def kb_list(
         if not can_view_kb(acl, user, settings):
             continue
         parts = blob.name.split("/")
+        provenance = provenance_from_metadata(blob.metadata, blob.last_modified)
         docs.append(
             {
                 "blob_name": blob.name,
@@ -143,6 +190,7 @@ def kb_list(
                 "owned_by_me": acl is not None and acl.owner == user.oid,
                 "can_delete": can_manage(acl.owner if acl else None, user, settings),
                 "shared_with_groups": list(acl.groups) if acl else [],
+                "provenance": provenance.to_dict(),
             }
         )
 
@@ -200,6 +248,7 @@ def kb_reindex(
                 solution_area=parts[2],
                 oids=[acl.owner],
                 groups=list(acl.groups),
+                provenance=provenance_from_metadata(blob.metadata, blob.last_modified),
             )
             results.append({"blob_name": blob.name, "chunks": count, "status": "ok"})
         except Exception as exc:
