@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from app.agents import kb_search, lifecycle, runner
+from app.agents import grounding, kb_search, lifecycle, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
 from app.agents.untrusted import fence, guidance_block
@@ -119,6 +119,10 @@ def run_draft(
 
     # Only sources that were retrieved for this draft (or returned by web grounding) may be cited.
     allowed_urls = context.urls | result.annotation_urls
+    # Figures must come from what the model was given (not checkable for web-grounded text, so trusted then)
+    given = "\n".join([context.text, requirements_json, guidance])
+    if allow_web_search:
+        given += "\n" + safe_text
 
     try:
         draft = kb_search.sanitize_citations(normalize_draft(runner.parse_json_object(safe_text)), allowed_urls)
@@ -128,6 +132,9 @@ def run_draft(
     for response in draft.get("responses", []) if isinstance(draft, dict) else []:
         if isinstance(response, dict):
             response["kb_evidence_found"] = evidence_found.get(str(response.get("requirement_id", "")), context.found)
+            grounding.note_removed(response, grounding.ground_fields(response, ("answer_markdown",), given))
+    if isinstance(draft, dict):
+        grounding.ground_fields(draft, ("executive_summary", "solution_overview"), given)
 
     draft["_meta"] = {
         "rfp_id": rfp_id,
@@ -195,17 +202,24 @@ def answer_single_requirement(
     safe_text, _ = runner.post_generation_guard(run_result.text)
     # Only sources retrieved for this requirement (or returned by web grounding) may be cited.
     allowed_urls = context.urls | run_result.annotation_urls
+    # Everything the model was given. Figures anywhere else are inventions, except that web-grounded text can't be
+    # checked here (its pages aren't visible to us), so with web search on the answer is trusted for figures.
+    given = "\n".join([context.text, req_text, user_context, guidance])
+    if allow_web_search:
+        given += "\n" + safe_text
 
     try:
         answer = kb_search.sanitize_citations(normalize_answer(runner.parse_json_object(safe_text)), allowed_urls)
         answer["requirement_id"] = req_id
         answer["kb_evidence_found"] = context.found
+        grounding.note_removed(answer, grounding.ground_fields(answer, ("answer_markdown",), given))
         return answer
     except (ValueError, IndexError):
+        text, _ = grounding.remove_unsupported_figures(safe_text, given)
         return {
             "requirement_id": req_id,
             "requirement_text": req_text,
-            "answer_markdown": kb_search.sanitize_citations(safe_text, allowed_urls),
+            "answer_markdown": kb_search.sanitize_citations(text, allowed_urls),
             "meets": "Partial",
             "evidence": [],
             "assumptions": [],

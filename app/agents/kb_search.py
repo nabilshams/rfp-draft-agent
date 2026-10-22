@@ -233,6 +233,11 @@ class RetrievedContext:
         return {d["source_url"] for d in self.docs if d.get("source_url")}
 
     @property
+    def text(self) -> str:
+        """The source text the model was shown (titles and the part of each document that fits the prompt)."""
+        return "\n".join(f"{d.get('title', '')}\n{d.get('content', '')[:_MAX_DOC_CHARS]}" for d in self.docs)
+
+    @property
     def found(self) -> bool:
         return bool(self.docs)
 
