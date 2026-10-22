@@ -1,0 +1,88 @@
+{
+  "_note": "Fictional knowledge base for the evaluation harness. Alder & Finch Cloud Services is an invented company; nothing here is real customer or confidential data.",
+  "documents": [
+    {
+      "title": "security-policy-2026.pdf",
+      "source_type": "authoritative",
+      "authority": "Security and Compliance",
+      "effective_date": "2026-05-01",
+      "version": "4",
+      "approval_status": "approved",
+      "chunks": [
+        {"section": "3. Encryption", "page": 4, "text": "All customer data is encrypted at rest with AES-256 and in transit with TLS 1.2 or higher. Encryption keys are rotated every 90 days and are stored in a hardware-backed key vault."},
+        {"section": "5. Certifications", "page": 7, "text": "Alder & Finch Cloud Services holds a current SOC 2 Type II report and an ISO 27001 certification. Both are audited every year by an independent assessor and the reports are available on request."},
+        {"section": "6. Data residency", "page": 9, "text": "Customer data is stored in Australian data centres in the Sydney and Melbourne regions. Backups stay in Australia and are retained for 35 days."},
+        {"section": "7. Availability", "page": 11, "text": "The production service is covered by a 99.95% monthly availability commitment. Planned maintenance happens outside business hours with 5 business days notice."}
+      ]
+    },
+    {
+      "title": "security-proposal-2022.pdf",
+      "source_type": "historical",
+      "effective_date": "2022-03-01",
+      "version": "1",
+      "approval_status": "unreviewed",
+      "chunks": [
+        {"section": "4. Encryption", "page": 3, "text": "Customer data is encrypted at rest with AES-128 and in transit with TLS 1.0. Encryption keys are rotated yearly."},
+        {"section": "5. Availability", "page": 5, "text": "We offer 99.5% availability for the production service. Maintenance windows are announced two days in advance."}
+      ]
+    },
+    {
+      "title": "support-handbook.docx",
+      "source_type": "approved_answer",
+      "authority": "Customer Success",
+      "effective_date": "2025-09-15",
+      "version": "2",
+      "approval_status": "approved",
+      "chunks": [
+        {"section": "2. Support hours", "text": "Support is available 24 hours a day, 7 days a week by phone and through the web portal."},
+        {"section": "3. Response times", "text": "Severity 1 incidents receive a response within 15 minutes. Severity 2 incidents receive a response within 1 hour and Severity 3 incidents within 1 business day."},
+        {"section": "4. Escalation", "text": "Every customer has a named service delivery manager and a documented escalation path to an executive sponsor."}
+      ]
+    },
+    {
+      "title": "identity-and-access.docx",
+      "source_type": "approved_answer",
+      "authority": "Platform Engineering",
+      "effective_date": "2025-11-20",
+      "version": "3",
+      "approval_status": "approved",
+      "chunks": [
+        {"section": "1. Single sign-on", "text": "The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect. Multi-factor authentication is enforced for all administrator accounts."},
+        {"section": "2. Role-based access control", "text": "Access is controlled by role-based permissions with four built-in roles: Administrator, Author, Reviewer and Read-only. Customer administrators can define custom roles."}
+      ]
+    },
+    {
+      "title": "delivery-method.docx",
+      "source_type": "approved_answer",
+      "authority": "Delivery Office",
+      "effective_date": "2025-06-10",
+      "version": "1",
+      "approval_status": "approved",
+      "chunks": [
+        {"section": "2. Implementation approach", "text": "Implementation follows four phases: discovery, build, test and go-live, with a project governance meeting every fortnight. A typical onboarding takes 12 weeks from contract signature."},
+        {"section": "3. Training", "text": "Each customer receives role-based training for administrators and end users, delivered online, and the recordings are provided afterwards."}
+      ]
+    },
+    {
+      "title": "accessibility-statement.pdf",
+      "source_type": "authoritative",
+      "authority": "Product Design",
+      "effective_date": "2026-02-01",
+      "version": "2",
+      "approval_status": "approved",
+      "chunks": [
+        {"section": "1. Standards", "page": 1, "text": "The web application conforms to WCAG 2.1 level AA. An accessibility conformance report is provided on request."}
+      ]
+    },
+    {
+      "title": "case-study-loyalty-migration.pdf",
+      "source_type": "historical",
+      "effective_date": "2021-08-01",
+      "version": "1",
+      "approval_status": "unreviewed",
+      "chunks": [
+        {"section": "2. Results", "page": 2, "text": "For a regional retailer, the loyalty platform migration was completed in 14 weeks and reduced checkout page load time by 30%."}
+      ]
+    }
+  ]
+}

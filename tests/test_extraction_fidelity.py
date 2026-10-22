@@ -9,6 +9,7 @@ import pytest
 
 from app.agents import answers, sections, strategies
 from app.agents.kb_search import RetrievedContext
+from app.evalkit.render import render_pdf as make_pdf
 from app.ingestion import pipeline
 from app.ingestion.rfp_extract import (
     Requirement,
@@ -45,39 +46,6 @@ def make_xlsx(rows) -> bytes:
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
-
-
-def make_pdf(pages: list[list[str]]) -> bytes:
-    """A minimal text PDF, one list of lines per page."""
-    objects: list[bytes] = []
-
-    def add(body: str) -> int:
-        objects.append(body.encode("latin-1"))
-        return len(objects)
-
-    add("<< /Type /Catalog /Pages 2 0 R >>")
-    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(len(pages)))
-    add(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>")
-    font = 3 + 2 * len(pages)
-    for i, lines in enumerate(pages):
-        content = "BT /F1 12 Tf 14 TL 50 700 Td " + " ".join(f"({line}) Tj T*" for line in lines) + " ET"
-        add(
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {4 + 2 * i} 0 R "
-            f"/Resources << /Font << /F1 {font} 0 R >> >> >>"
-        )
-        add(f"<< /Length {len(content)} >>\nstream\n{content}\nendstream")
-    add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-
-    out = b"%PDF-1.4\n"
-    offsets = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
-    xref = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
-    out += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
-    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
-    return out
 
 
 # ── Spreadsheets ─────────────────────────────────────────

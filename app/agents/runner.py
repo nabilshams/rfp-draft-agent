@@ -83,7 +83,8 @@ class AgentRunResult:
     annotation_urls: set[str] = field(default_factory=set)
     has_response: bool = False
     last_error: str = ""
-
+    # Token counts the service reported for the run (empty when it didn't report any)
+    usage: dict[str, int] = field(default_factory=dict)
     @property
     def completed(self) -> bool:
         return self.status == "completed"
@@ -134,6 +135,12 @@ def run_agent_prompt(agent_id: str, content: str, *, web_search: bool = False) -
             run_id=run.id,
             last_error=str(getattr(run, "last_error", "") or ""),
         )
+        usage = getattr(run, "usage", None)
+        if usage is not None:
+            result.usage = {
+                "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            }
         if status != "completed":
             return result
 
