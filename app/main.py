@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ServiceRequestError
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import logging_setup
+from app import health, logging_setup
 from app.auth.entra import log_auth_mode
 from app.config import get_settings
 from app.routers import draft, kb, ops, outputs, rfp, template
@@ -51,10 +53,18 @@ async def lifespan(app: FastAPI):
         logger.warning("Agent setup deferred – will retry on first request: %s", exc)
 
     logger.info("RFP Draft Agent started")
+    # Checked in the background so a slow or unreachable service can't delay startup; the result is logged.
+    threading.Thread(target=_log_dependency_status, args=(settings,), name="startup-checks", daemon=True).start()
     yield
     logger.info("RFP Draft Agent shutting down")
     jobs.shutdown()
     logging_setup.set_main_loop(None)
+
+
+def _log_dependency_status(settings) -> None:
+    results = health.check_dependencies(settings)
+    level = logging.INFO if all(v == health.OK for v in results.values()) else logging.ERROR
+    logger.log(level, "Dependency status: %s", ", ".join(f"{k}={v}" for k, v in results.items()))
 
 
 app = FastAPI(
@@ -63,6 +73,29 @@ app = FastAPI(
     description="Azure AI Foundry code-first agent for RFP response drafting",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HttpResponseError)
+@app.exception_handler(ServiceRequestError)
+@app.exception_handler(ClientAuthenticationError)
+async def azure_service_failure(request: Request, exc: Exception):
+    """An Azure service refused the app or couldn't be reached: say so, rather than a bare 500.
+
+    The detail goes to the log only. The client learns which kind of problem it is (a configuration or network
+    problem the operator has to fix, not something the user did wrong).
+    """
+    outcome = health.classify(exc)
+    logger.error("Azure service call failed on %s %s (%s): %s: %s", request.method, request.url.path, outcome,
+                 type(exc).__name__, exc)
+    if outcome == health.ERROR:
+        return JSONResponse(status_code=502, content={"detail": "An Azure service returned an error. Try again; if it persists, check the server logs."})
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "The app can't reach one of its Azure services (storage, search or AI). "
+            "This is a network or permission problem for the administrator; check the server logs."
+        },
+    )
 
 for module in (ops, rfp, draft, jobs_router, kb, outputs, template):
     app.include_router(module.router)

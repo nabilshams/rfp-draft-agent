@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -36,7 +37,7 @@ def download_output(
     blob_name = f"{rfp_id}/{filename}"
     try:
         data = azure_clients.container(settings, settings.storage_output_container).download_blob(blob_name).readall()
-    except Exception:
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail=f"Output not found: {blob_name}") from None
 
     return StreamingResponse(

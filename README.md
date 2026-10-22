@@ -158,7 +158,11 @@ python scripts/demo.py --base-url http://localhost:8000
 ## API Reference
 
 ### `GET /health`
-Liveness probe.
+Liveness probe (unauthenticated).
+
+### `GET /health/dependencies`
+Whether the app can reach storage, search and the agent service: `ok`, `refused` (missing role or firewall),
+`unreachable` (DNS or network) or `error`. Requires authentication; reveals no details.
 
 ### `GET /metrics`
 Basic operational counters (uploads, drafts, etc.). Requires authentication (unless `AUTH_MODE=disabled`).
@@ -320,7 +324,8 @@ Use `azd deploy` for code-only updates and `azd down --purge` to delete everythi
 
 | Resource | Purpose |
 |---|---|
-| Container Apps environment + app (1 vCPU / 2 GiB, single replica) | Hosts the API and UI |
+| Container Apps environment (in a VNet) + app (1 vCPU / 2 GiB, single replica) | Hosts the API and UI |
+| VNet + private endpoint + private DNS zone | Private path to storage (see [Private storage](#private-storage)) |
 | Container Registry (Basic) | Stores the image (pulled with managed identity) |
 | AI Services account + Foundry project | Agents; `gpt-4o` and `text-embedding-3-small` deployments |
 | AI Search (`basic`) | Knowledge-base index (created on first KB ingest) |
@@ -331,7 +336,31 @@ Use `azd deploy` for code-only updates and `azd down --purge` to delete everythi
 Keyless by design: storage, search and AI Services have local (key) auth disabled and the app uses
 `DefaultAzureCredential`. The managed identity gets Storage Blob Data Contributor, Search Index Data
 Contributor, Search Service Contributor, Azure AI User and Cognitive Services OpenAI User. The identity
-running `azd` gets the same roles so you can run the app and scripts locally.
+running `azd` gets the same roles for Search and AI Services so you can run scripts against them; storage is
+reachable only from inside the VNet (next section).
+
+### Private storage
+
+The storage account has **public network access disabled** and is reached through a **private endpoint** in a VNet
+(`infra/modules/network.bicep`: VNet, private endpoint, `privatelink.blob.core.windows.net` DNS zone linked to the
+VNet). The Container Apps environment is created inside that VNet (a workload-profiles environment, ingress still
+external, so the app is reachable from the internet behind Easy Auth). Some subscriptions enforce this with a
+governance policy that sets storage public access to `Disabled` and reverts any attempt to change it.
+
+Consequences to know about:
+
+- **Your machine can't reach the storage account.** Running the app locally against the deployed storage fails
+  (use [Azurite](https://learn.microsoft.com/azure/storage/common/storage-use-azurite) via `docker-compose`, or a
+  separate dev storage account that allows public access). The Azure portal's storage browser is blocked for the
+  same reason.
+- **The environment's network can't be changed in place.** Changing the VNet address ranges, or moving an existing
+  deployment into the VNet, means deleting the Container Apps environment and app and provisioning again (about 20
+  minutes). The app URL changes when that happens, so re-run `python scripts/setup_auth.py` (it only refreshes the
+  redirect URI) and set `azd env set SERVICE_API_RESOURCE_EXISTS false` before provisioning.
+- **Check it from the logs.** At startup the app logs `Dependency status: storage=ok, search=ok, agents=ok`;
+  `refused` means a missing role or a firewall, `unreachable` means DNS or the private endpoint. Signed-in users can
+  call `GET /health/dependencies` for the same answer. When Azure refuses the app, API calls return `503` with a
+  plain message instead of a bare `500`.
 
 **Requirements:** an Azure subscription where you can create role assignments (Owner, or Contributor +
 User Access Administrator), quota for `gpt-4o` (GlobalStandard, 30K TPM) and `text-embedding-3-small`
@@ -396,7 +425,8 @@ Rough monthly cost of the defaults in `australiaeast`, idle (check the [Azure pr
 | Resource | Notes |
 |---|---|
 | AI Search `basic` | The largest fixed cost: billed per hour whether or not it is used. Use `searchSku` and `azd down` for throwaway environments. |
-| Container Apps (1 vCPU / 2 GiB, 1 replica always on) | `minReplicas: 1` keeps the live log stream and background drafts alive; it is billed while running. |
+| Container Apps (1 vCPU / 2 GiB, 1 replica always on) | `minReplicas: 1` keeps the live log stream and background drafts alive; it is billed while running. The VNet-integrated environment uses the Consumption workload profile. |
+| Private endpoint (storage) | A small hourly fee plus per-GB data processing; the VNet and the private DNS zone are close to free. |
 | Container Registry `Basic` | Small fixed cost. |
 | Log Analytics / Application Insights | Pay per GB ingested; 30-day retention. |
 | Alert rules | A small per-rule monthly fee for the log alerts. |
@@ -410,8 +440,9 @@ metered separately. A draft makes about one model call per requirement, plus a f
 - **Single replica.** The live log stream, `/metrics` counters and the per-user rate limiter are held in process
   memory, so the app runs one replica. Background-draft state is already in Blob Storage; move the rest out of
   process (and the in-process job workers to a queue-triggered worker) before scaling out.
-- **Private networking.** Storage, Search and AI Services have public network access (protected by Entra ID and
-  RBAC, with key auth disabled). Private endpoints and a VNet are not configured; add them if your policy requires it.
+- **Private networking for Search and AI Services.** Storage is private (see [Private storage](#private-storage));
+  Search and AI Services still have public endpoints, protected by Entra ID and RBAC with key auth disabled. Add
+  private endpoints for them if your policy requires it (tracked in #25).
 - **Grounding with Bing.** The connection is created by hand in the Foundry portal (Management center → Connected
   resources); put its resource ID in `BING_CONNECTION_ID` (`scripts/list_connections.py` lists it). Read
   [Web search](#web-search-bing-grounding) about the data flow before enabling it.
@@ -638,6 +669,7 @@ rfp-draft-agent/
 │   ├── config.py                  # Settings from env vars (incl. derived endpoints)
 │   ├── azure_clients.py           # Shared, cached Azure SDK clients (blob, search, OpenAI, agents)
 │   ├── schemas.py                 # Request bodies
+│   ├── health.py                  # Dependency checks (startup log and /health/dependencies)
 │   ├── logging_setup.py           # Console logging + live log stream
 │   ├── metrics.py                 # Request counters for /metrics
 │   ├── routers/                   # One module per area: ops, rfp, draft, jobs, kb, outputs, template
@@ -676,6 +708,7 @@ rfp-draft-agent/
 │   ├── main.bicep                 # azd entry point (subscription scope, creates the resource group)
 │   ├── resources.bicep            # Foundry, Search, Storage, ACR, Container Apps, RBAC
 │   ├── modules/alerts.bicep       # Alert rules (failed requests, exceptions, restarts)
+│   ├── modules/network.bicep      # VNet, storage private endpoint and private DNS
 │   └── main.parameters.json       # Maps azd environment values to Bicep parameters
 ├── azure.yaml                     # azd service definition (Container App, remote build)
 ├── templates/
