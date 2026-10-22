@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi import HTTPException
 
 from app import azure_clients
@@ -33,7 +34,7 @@ def load_rfp(settings: Settings, user: UserClaims, rfp_id: str, filename: str | 
     blob_name = f"{rfp_id}/{filename}" if filename else blob.name
     try:
         data = container.download_blob(blob_name).readall()
-    except Exception:
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail=f"RFP blob not found: {blob_name}") from None
     return RfpFile(filename=blob_name.rsplit("/", 1)[-1], data=data)
 

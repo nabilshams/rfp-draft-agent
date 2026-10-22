@@ -110,6 +110,13 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
+    // Reached only through the private endpoint (modules/network.bicep). Subscription governance policies
+    // often force this to Disabled anyway; stating it keeps the template and the deployed state identical.
+    publicNetworkAccess: 'Disabled'
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices'
+    }
     // The app authenticates with Entra ID (DefaultAzureCredential); keys are not needed.
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
@@ -271,6 +278,21 @@ resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// ── Private network ─────────────────────────────────────
+// The Container Apps environment lives in this VNet so it reaches storage through the private endpoint.
+// An environment's network can't be changed after it is created: changing the address ranges or turning this
+// off means deleting and recreating the environment (and the app in it).
+
+module network 'modules/network.bicep' = {
+  name: 'network'
+  params: {
+    location: location
+    tags: tags
+    namePrefix: 'rfp-${token}'
+    storageAccountId: storage.id
+  }
+}
+
 resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: containerEnvName
   location: location
@@ -283,6 +305,16 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
+    vnetConfiguration: {
+      infrastructureSubnetId: network.outputs.infrastructureSubnetId
+      internal: false // the app stays reachable from the internet (behind Easy Auth); only its outbound path is private
+    }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
   }
 }
 
@@ -347,6 +379,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   dependsOn: [acrPullRole]
   properties: {
     managedEnvironmentId: containerEnv.id
+    workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {

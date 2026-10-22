@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 
+from app import health as dependency_health
 from app import logging_setup, metrics
 from app.auth.entra import UserClaims, authenticate, get_current_user
 from app.config import Settings, get_settings
@@ -21,6 +22,19 @@ async def health(settings: Settings = Depends(get_settings)):
         "status": "healthy",
         "service": "rfp-draft-agent",
         "web_search_available": bool(settings.bing_connection_id),
+    }
+
+
+@router.get("/health/dependencies", tags=["ops"])
+def dependencies(user: UserClaims = Depends(get_current_user), settings: Settings = Depends(get_settings)):
+    """Whether the app can reach storage, search and the agent service (``ok`` / ``refused`` / ``unreachable`` / ``error``).
+
+    Requires sign-in (``/health`` is the unauthenticated probe) and reveals no details.
+    """
+    results = dependency_health.check_dependencies(settings)
+    return {
+        "status": "ok" if all(v == dependency_health.OK for v in results.values()) else "degraded",
+        "dependencies": results,
     }
 
 

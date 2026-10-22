@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from app import azure_clients
@@ -124,28 +125,26 @@ def kb_list(
     container = azure_clients.container(settings, settings.storage_kb_container)
 
     docs = []
-    try:
-        for blob in container.list_blobs(include=["metadata"]):
-            acl = parse_kb_acl(blob.metadata)
-            if not can_view_kb(acl, user, settings):
-                continue
-            parts = blob.name.split("/")
-            docs.append(
-                {
-                    "blob_name": blob.name,
-                    "filename": parts[-1] if parts else blob.name,
-                    "client_id": parts[0] if len(parts) > 1 else "",
-                    "project_id": parts[1] if len(parts) > 2 else "",
-                    "solution_area": parts[2] if len(parts) > 3 else "",
-                    "size_bytes": blob.size,
-                    "last_modified": blob.last_modified.isoformat() if blob.last_modified else "",
-                    "owned_by_me": acl is not None and acl.owner == user.oid,
-                    "can_delete": can_manage(acl.owner if acl else None, user, settings),
-                    "shared_with_groups": list(acl.groups) if acl else [],
-                }
-            )
-    except Exception:
-        logger.exception("Could not list knowledge-base documents")
+    # A storage failure propagates (as a clear 503) instead of looking like an empty knowledge base.
+    for blob in container.list_blobs(include=["metadata"]):
+        acl = parse_kb_acl(blob.metadata)
+        if not can_view_kb(acl, user, settings):
+            continue
+        parts = blob.name.split("/")
+        docs.append(
+            {
+                "blob_name": blob.name,
+                "filename": parts[-1] if parts else blob.name,
+                "client_id": parts[0] if len(parts) > 1 else "",
+                "project_id": parts[1] if len(parts) > 2 else "",
+                "solution_area": parts[2] if len(parts) > 3 else "",
+                "size_bytes": blob.size,
+                "last_modified": blob.last_modified.isoformat() if blob.last_modified else "",
+                "owned_by_me": acl is not None and acl.owner == user.oid,
+                "can_delete": can_manage(acl.owner if acl else None, user, settings),
+                "shared_with_groups": list(acl.groups) if acl else [],
+            }
+        )
 
     return {"documents": docs, "count": len(docs)}
 
@@ -166,8 +165,8 @@ def kb_delete(
     try:
         container.delete_blob(blob_name)
         logger.info("Deleted blob: %s", blob_name)
-    except Exception as exc:
-        logger.warning("Could not delete blob %s: %s", blob_name, exc)
+    except ResourceNotFoundError:
+        logger.info("Blob %s was already gone", blob_name)
 
     return {"blob_name": blob_name, "deleted_chunks": delete_kb_chunks(settings, blob_name)}
 
