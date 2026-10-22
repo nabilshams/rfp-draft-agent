@@ -67,12 +67,16 @@ def kb_metadata(owner_oid: str, groups: Iterable[str]) -> dict[str, str]:
     return {OWNER_KEY: owner_oid, SHARED_GROUPS_KEY: ",".join(groups)}
 
 
-def parse_kb_acl(metadata: Mapping[str, str] | None) -> KbAcl | None:
-    """The recorded ACL, or ``None`` for documents that have no owner."""
-    owner = (metadata or {}).get(OWNER_KEY, "")
+def parse_kb_acl(metadata: Mapping[str, str | None] | None) -> KbAcl | None:
+    """The recorded ACL, or ``None`` for documents that have no owner.
+
+    Azure returns a metadata value that was stored empty (a document shared with no group) as ``None`` when
+    listing blobs, so every value is treated as possibly missing.
+    """
+    owner = (metadata or {}).get(OWNER_KEY) or ""
     if not owner:
         return None
-    raw_groups = (metadata or {}).get(SHARED_GROUPS_KEY, "")
+    raw_groups = (metadata or {}).get(SHARED_GROUPS_KEY) or ""
     return KbAcl(owner=owner, groups=tuple(g for g in raw_groups.split(",") if g))
 
 

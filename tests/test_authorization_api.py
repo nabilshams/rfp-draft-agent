@@ -28,7 +28,8 @@ class FakeBlob:
     def __init__(self, name, data, metadata):
         self.name = name
         self.data = data
-        self.metadata = dict(metadata) if metadata else {}
+        # Like Azure, which hands back a metadata value that was stored empty as None.
+        self.metadata = {k: (v or None) for k, v in metadata.items()} if metadata else {}
         self.size = len(data)
         self.last_modified = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -45,7 +46,7 @@ class FakeBlobClient:
         return blob
 
     def set_blob_metadata(self, metadata):
-        self._container.blobs[self._name].metadata = dict(metadata)
+        self._container.blobs[self._name].metadata = {k: (v or None) for k, v in metadata.items()}
 
 
 class FakeContainer:
@@ -270,7 +271,8 @@ class TestKbUpload:
         response = await upload_kb(client, A)
 
         assert response.status_code == 200, response.text
-        assert world.storage.kb.blobs[KB_BLOB].metadata == {"owner_oid": "user-a", "shared_groups": ""}
+        # an unshared document stores an empty group list, which Azure reads back as None
+        assert world.storage.kb.blobs[KB_BLOB].metadata == {"owner_oid": "user-a", "shared_groups": None}
         (ingest,) = world.ingests
         assert ingest["oids"] == ["user-a"]
         assert ingest["groups"] == []

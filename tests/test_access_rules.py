@@ -70,6 +70,11 @@ class TestKbAcl:
     def test_private_document_has_no_groups(self):
         assert access.parse_kb_acl(access.kb_metadata("user-a", [])) == access.KbAcl("user-a", ())
 
+    def test_azure_returns_an_empty_metadata_value_as_none(self):
+        # Seen on a real storage account: listing blobs gave None for shared_groups of an unshared document.
+        assert access.parse_kb_acl({"owner_oid": "user-a", "shared_groups": None}) == access.KbAcl("user-a", ())
+        assert access.parse_kb_acl({"owner_oid": None, "shared_groups": None}) is None
+
     @pytest.mark.parametrize("metadata", [None, {}, {"shared_groups": "g1"}, {"owner_oid": ""}])
     def test_documents_without_an_owner_have_no_acl(self, metadata):
         assert access.parse_kb_acl(metadata) is None
