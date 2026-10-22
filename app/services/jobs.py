@@ -33,7 +33,7 @@ from app.auth.access import can_manage
 from app.auth.entra import UserClaims
 from app.config import Settings
 from app.schemas import DraftRequest
-from app.services.draft_pipeline import stream_draft
+from app.services.draft_pipeline import DraftSink, stream_draft
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,8 @@ class Job:
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     heartbeat_at: str = field(default_factory=_now)
+    # Set when the draft belongs to a ledger project (its answers are written to the ledger as they are produced)
+    project_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Job:
@@ -218,6 +220,7 @@ def _run_job(
     user: UserClaims,
     allow_web_search: bool,
     guidance: str = "",
+    sink: DraftSink | None = None,
 ) -> None:
     job = live.job
     store = JobStore(settings)
@@ -228,7 +231,7 @@ def _run_job(
             return
         live.update(status="running")
 
-        events = stream_draft(settings, req, requirements, user, allow_web_search, guidance, job.id)
+        events = stream_draft(settings, req, requirements, user, allow_web_search, guidance, job.id, sink=sink)
         for event in events:
             live.update(_record(event))
             if store.cancel_requested(job.id):
@@ -260,9 +263,24 @@ def submit(
     requirements: list[dict[str, Any]],
     allow_web_search: bool,
     guidance: str = "",
+    *,
+    sink: DraftSink | None = None,
+    project_id: str = "",
+    job_id: str | None = None,
 ) -> Job:
-    """Store a new job and start it. Returns it in the ``queued`` state."""
-    job = Job(id=uuid.uuid4().hex, owner_oid=user.oid, rfp_id=req.rfp_id, approach=req.approach, total=len(requirements))
+    """Store a new job and start it. Returns it in the ``queued`` state.
+
+    With a *sink* (a project draft) each answer is handed to it as it is produced, so nothing is lost if the job is
+    interrupted.
+    """
+    job = Job(
+        id=job_id or uuid.uuid4().hex,
+        owner_oid=user.oid,
+        rfp_id=req.rfp_id,
+        approach=req.approach,
+        total=len(requirements),
+        project_id=project_id,
+    )
     live = LiveJob(settings, job)
 
     with _active_lock:
@@ -278,7 +296,7 @@ def submit(
         JobStore(settings).save(job)
         live.start_heartbeat()
         _get_executor(settings).submit(
-            _run_job, settings, live, req, requirements, user, allow_web_search, guidance
+            _run_job, settings, live, req, requirements, user, allow_web_search, guidance, sink
         )
     except Exception:
         _finish(live)
@@ -289,23 +307,38 @@ def submit(
 # ── Reading jobs ─────────────────────────────────────────
 
 
-def get_job(settings: Settings, user: UserClaims, job_id: str) -> Job:
-    """A job the user may see (404 otherwise). An unfinished job nobody is working on is reported as failed."""
-    store = JobStore(settings)
-    job = store.load(job_id)
-    if job is None or not can_manage(job.owner_oid, user, settings):
-        if job is not None:
-            logger.warning("User %s denied access to job %s", user.oid, job_id)
-        raise HTTPException(status_code=404, detail="Draft job not found")
-
+def reconcile(settings: Settings, job: Job) -> Job:
+    """The job as it really is: an unfinished job nobody is working on (a restart, a lost worker) becomes ``failed``."""
     with _active_lock:
         running_here = job.id in _active
     silent_for = _age_seconds(job.heartbeat_at)
     if job.status in ACTIVE_STATES and not running_here and silent_for > settings.job_stale_seconds:
         logger.warning("Job %s has had no heartbeat for %.0fs; marking it failed", job.id, silent_for)
         job.status, job.error, job.updated_at = "failed", LOST_JOB, _now()
-        store.save(job)
+        JobStore(settings).save(job)
     return job
+
+
+def find_job(settings: Settings, job_id: str) -> Job | None:
+    """A job by id with no access check (callers check access to whatever the job belongs to), reconciled."""
+    job = JobStore(settings).load(job_id)
+    return reconcile(settings, job) if job else None
+
+
+def get_job(settings: Settings, user: UserClaims, job_id: str) -> Job:
+    """A job the user may see (404 otherwise). An unfinished job nobody is working on is reported as failed."""
+    job = JobStore(settings).load(job_id)
+    if job is None or not can_manage(job.owner_oid, user, settings):
+        if job is not None:
+            logger.warning("User %s denied access to job %s", user.oid, job_id)
+        raise HTTPException(status_code=404, detail="Draft job not found")
+    return reconcile(settings, job)
+
+
+def request_cancel(settings: Settings, job: Job) -> None:
+    """Ask a running job to stop (no access check: the caller has decided who may)."""
+    if job.status in ACTIVE_STATES:
+        JobStore(settings).request_cancel(job.id)
 
 
 def cancel_job(settings: Settings, user: UserClaims, job_id: str) -> Job:

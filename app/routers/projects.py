@@ -10,10 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from app.auth.entra import UserClaims, get_current_user
 from app.auth.ratelimit import rate_limited
 from app.config import Settings, get_settings
-from app.ledger import service
-from app.ledger.schemas import AnswerCreate, ProjectCreate, ProjectUpdate, RequirementUpdate
+from app.ledger import drafting, service
+from app.ledger.schemas import AnswerCreate, ProjectCreate, ProjectDraft, ProjectUpdate, RequirementUpdate
 from app.ledger.store import LedgerStore, store_for
-from app.services.drafts import load_rfp, prepare_draft
+from app.services.drafts import load_rfp, prepare_draft, web_search_choice
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -190,3 +190,51 @@ def list_events(
     """The audit trail: who changed what and when, newest first."""
     events = service.list_events(store, project_id, user, settings, rid=rid, limit=limit, offset=offset)
     return {"events": events, "count": len(events), "next_offset": offset + len(events)}
+
+
+# ── Drafting ─────────────────────────────────────────────
+
+
+@router.post("/{project_id}/draft", status_code=202, dependencies=[Depends(rate_limited)])
+def start_draft(
+    project_id: ProjectId,
+    body: ProjectDraft,
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    store: LedgerStore = Depends(ledger),
+):
+    """Draft the project's requirements in the background, saving each answer to the ledger as it is produced.
+
+    Only requirements without an answer are drafted (name some in ``rids`` to redo them), so after an interruption
+    this picks up where it left off. One draft runs per project at a time (409 otherwise). Poll
+    ``GET /projects/{id}/draft`` or just reload the project: answers appear in it as they are written.
+    """
+    allow_web_search = web_search_choice(body.allow_web_search, settings)
+    job = drafting.start(
+        store, settings, user, project_id,
+        request=body.as_request(project_id), rids=body.rids, allow_web_search=allow_web_search,
+    )
+    return {"job_id": job.id, "status": job.status, "total": job.total, "status_url": f"/projects/{project_id}/draft"}
+
+
+@router.get("/{project_id}/draft")
+def draft_status(
+    project_id: ProjectId,
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    store: LedgerStore = Depends(ledger),
+):
+    """The latest draft's status (``running``, ``interrupted``), what is still unanswered and where to download the
+    documents. Anyone who can open the project can see it."""
+    return drafting.status(store, settings, user, project_id)
+
+
+@router.post("/{project_id}/draft/cancel", dependencies=[Depends(rate_limited)])
+def cancel_draft(
+    project_id: ProjectId,
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    store: LedgerStore = Depends(ledger),
+):
+    """Ask the running draft to stop. Answers already saved are kept."""
+    return drafting.cancel(store, settings, user, project_id)

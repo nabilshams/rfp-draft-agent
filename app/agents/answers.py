@@ -44,6 +44,9 @@ def error_answer(requirement: dict[str, Any], *, message: str, risk: str, kb_evi
         "risks": [risk],
         "followups": [],
         "kb_evidence_found": kb_evidence_found,
+        # Marks an answer that is only a placeholder for a failure: a project draft does not store it as the answer,
+        # so a later run tries the requirement again.
+        "generation_failed": True,
     }
 
 
