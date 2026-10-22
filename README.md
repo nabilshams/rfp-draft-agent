@@ -120,6 +120,9 @@ cp .env.example .env
 | `KB_STATUS_WEIGHTS` | Same for approval status: `approved=1.0,unreviewed=1.0,draft=0.8,superseded=0.5` |
 | `KB_FRESHNESS_HALF_LIFE_DAYS` / `KB_FRESHNESS_FLOOR` | Age weighting: a document's weight falls from 1.0 towards the floor (default `0.7`), halfway after the half-life (default `730` days). `0` turns freshness off |
 | `SEARCH_CANDIDATE_FACTOR` | Results are fetched this many times wider than `SEARCH_TOP_K` (default `3`), re-ordered by the weights, then cut to top-k |
+| `COSMOS_ENDPOINT` / `COSMOS_DATABASE` / `COSMOS_CONTAINER` | The project ledger's Cosmos DB account, database (default `rfp-ledger`) and container (default `ledger`). Empty endpoint = ledger off |
+| `LEDGER_BACKEND` | `memory` keeps the ledger in this process (local development only); empty uses Cosmos DB when `COSMOS_ENDPOINT` is set |
+| `LEDGER_MAX_REQUIREMENTS` | Most requirements one project may hold (default `1000`) |
 | `ADMIN_OIDS` | Comma-separated object IDs of administrators (see [Access model](#access-model)); empty by default |
 | `MAX_UPLOAD_MB` | Largest accepted upload (default: `25`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-user requests per minute on the expensive endpoints (default: `60`, `0` = off) |
@@ -267,6 +270,28 @@ curl "http://localhost:8000/drafts/9f1c...?after=0"
 Poll with `after` set to the previous reply's `next` to receive only new events, until `status` is `succeeded`
 (`outputs` then holds the download URLs), `failed` (see `error`) or `cancelled`. `POST /drafts/{job_id}/cancel`
 asks a running draft to stop. See [Background drafts](#background-drafts).
+
+### Projects (the ledger)
+A *project* is one bid, kept on the server so a page reload loses nothing and several people can work on it. It
+holds the RFP's requirements (with the IDs and anchors from extraction), their status and assignee, **versioned
+answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
+
+| Endpoint | What it does |
+|---|---|
+| `POST /projects` | `{ "name", "rfp_id" }` extracts the RFP's requirements into a new project (or send `"requirements": [...]` yourself). Optional `"share_with_groups": ["group-id"]`. Returns the whole project (201) |
+| `GET /projects` | The projects you own or that are shared with one of your groups, newest first |
+| `GET /projects/{id}` | The project, its requirements with their current answers, and counts by status. 404 if you can't open it |
+| `PATCH /projects/{id}` | Rename, or change who it is shared with (owner or admin) |
+| `DELETE /projects/{id}` | Delete it with all its answers and history (owner or admin) |
+| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
+| `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
+| `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
+
+Rules: anyone who can open a project can read it and edit its requirements and answers; only the owner (or an
+administrator) can rename, share or delete it. A project nobody shared with you is a `404`, not a `403`. Every edit is
+attributed and timestamped. Text you write is redacted on arrival like all other input. Requirement IDs in the
+ledger contain only letters, digits, `.`, `_` and `-` (anything else in the RFP's own reference becomes `-`).
+Without a configured ledger these endpoints answer `503`.
 
 ### `POST /answer`
 Answer a single question with grounded citations.
@@ -485,6 +510,31 @@ Rough monthly cost of the defaults in `australiaeast`, idle (check the [Azure pr
 
 Web search through Bing grounding, the semantic ranker (`SEARCH_SEMANTIC_RANKER`) and each draft's model calls are
 metered separately. A draft makes about one model call per requirement, plus a few for sections.
+
+### The project ledger
+
+Projects, requirements, answer versions and the audit trail are stored in **Azure Cosmos DB for NoSQL** (serverless),
+created by `infra/modules/cosmos.bicep`:
+
+- **Serverless:** no provisioned throughput. An idle ledger costs almost nothing; you pay per request and for storage.
+- **Entra ID only:** local (key) authentication is disabled. The app's managed identity has the built-in *Cosmos DB
+  Built-in Data Contributor* data-plane role. There are no keys to leak.
+- **Private:** public network access is disabled; the app reaches it through a private endpoint and the
+  `privatelink.documents.azure.com` DNS zone in the same VNet as storage (`modules/network.bicep`). You cannot connect
+  from your own machine.
+- **One container** (`ledger`, partition key `/projectId`) holds a whole project, so a change to a requirement, the
+  new answer version and its audit event are written in a single atomic transactional batch, and a stale edit is
+  refused by the document's etag. A project holds up to `LEDGER_MAX_REQUIREMENTS` (default 1000) requirements.
+- **Alert:** more than 5 throttled or failed (429/500/503) requests in 15 minutes.
+
+The app finds it through `COSMOS_ENDPOINT`, `COSMOS_DATABASE` and `COSMOS_CONTAINER` (set by the infrastructure);
+`/health/dependencies` and the startup log report it as `ledger`. For local development without Azure set
+`LEDGER_BACKEND=memory` (data lives in the process and is lost on restart). After a deployment you can check the real
+database from inside the container:
+
+```bash
+az containerapp exec -n <app> -g <resource-group> --command "python -m app.ledger.smoke"
+```
 
 ### Not covered yet
 
@@ -783,7 +833,8 @@ rfp-draft-agent/
 │   ├── health.py                  # Dependency checks (startup log and /health/dependencies)
 │   ├── logging_setup.py           # Console logging + live log stream
 │   ├── metrics.py                 # Request counters for /metrics
-│   ├── routers/                   # One module per area: ops, rfp, draft, jobs, kb, outputs, template
+│   ├── routers/                   # One module per area: ops, rfp, draft, jobs, projects, kb, outputs, template
+│   ├── ledger/                    # Project ledger: store (Cosmos DB / memory), service, schemas, smoke check
 │   ├── services/                  # Shared steps: RFP loading/publishing, draft pipeline, background jobs, KB access, uploads
 │   ├── static/                    # Web UI: index.html, app.css, app.js, safe.js (escaping helpers)
 │   ├── auth/
@@ -824,7 +875,8 @@ rfp-draft-agent/
 │   ├── main.bicep                 # azd entry point (subscription scope, creates the resource group)
 │   ├── resources.bicep            # Foundry, Search, Storage, ACR, Container Apps, RBAC
 │   ├── modules/alerts.bicep       # Alert rules (failed requests, exceptions, restarts)
-│   ├── modules/network.bicep      # VNet, storage private endpoint and private DNS
+│   ├── modules/network.bicep      # VNet, private endpoints (storage, Cosmos DB) and private DNS
+│   ├── modules/cosmos.bicep       # Cosmos DB account (serverless, private, Entra-only), database, container, role
 │   └── main.parameters.json       # Maps azd environment values to Bicep parameters
 ├── azure.yaml                     # azd service definition (Container App, remote build)
 ├── templates/

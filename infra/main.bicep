@@ -141,3 +141,4 @@ output EMBEDDING_MODEL_DEPLOYMENT_NAME string = embeddingModelName
 output AZURE_AI_SEARCH_ENDPOINT string = resources.outputs.searchEndpoint
 output AZURE_AI_SEARCH_CONNECTION_NAME string = resources.outputs.searchName
 output AZURE_STORAGE_ACCOUNT_URL string = resources.outputs.storageAccountUrl
+output COSMOS_ENDPOINT string = resources.outputs.cosmosEndpoint

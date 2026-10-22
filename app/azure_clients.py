@@ -15,6 +15,7 @@ from app.config import Settings
 
 if TYPE_CHECKING:
     from azure.ai.agents import AgentsClient
+    from azure.cosmos import ContainerProxy
     from azure.search.documents import SearchClient
     from azure.search.documents.indexes import SearchIndexClient
     from azure.storage.blob import BlobServiceClient, ContainerClient
@@ -65,6 +66,18 @@ def search_client(settings: Settings) -> SearchClient:
         )
 
     return _cached(("search", settings.search_endpoint, settings.ai_search_index_name), create)
+
+
+def cosmos_container(settings: Settings) -> ContainerProxy:
+    """The ledger's Cosmos DB container (created by the infrastructure; the app never creates it)."""
+
+    def create():
+        from azure.cosmos import CosmosClient
+
+        client = CosmosClient(settings.cosmos_endpoint, credential=credential())
+        return client.get_database_client(settings.cosmos_database).get_container_client(settings.cosmos_container)
+
+    return _cached(("cosmos", settings.cosmos_endpoint, settings.cosmos_database, settings.cosmos_container), create)
 
 
 def search_index_client(settings: Settings) -> SearchIndexClient:

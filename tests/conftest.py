@@ -15,6 +15,7 @@ os.environ["BING_CONNECTION_ID"] = ""
 import pytest  # noqa: E402
 
 from app import azure_clients, kb_refs  # noqa: E402
+from app.ledger import store as ledger_store  # noqa: E402
 from app.services import jobs  # noqa: E402
 
 from .test_authorization_api import client, use_settings, world  # noqa: E402, F401
@@ -33,7 +34,9 @@ def no_real_azure_clients(monkeypatch):
     azure_clients.reset()
     jobs.reset()
     kb_refs.refs.forget()
+    ledger_store.reset_memory()
     monkeypatch.setattr("azure.storage.blob.BlobServiceClient", refuse("BlobServiceClient"))
+    monkeypatch.setattr("azure.cosmos.CosmosClient", refuse("CosmosClient"))
     monkeypatch.setattr("azure.search.documents.SearchClient", refuse("SearchClient"))
     monkeypatch.setattr("azure.search.documents.indexes.SearchIndexClient", refuse("SearchIndexClient"))
     monkeypatch.setattr("azure.ai.agents.AgentsClient", refuse("AgentsClient"))

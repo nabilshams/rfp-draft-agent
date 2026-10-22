@@ -47,13 +47,29 @@ def _agents(settings: Settings) -> None:
     next(iter(azure_clients.agents_client(settings).list_agents(limit=1)), None)
 
 
+def _ledger(settings: Settings) -> None:
+    from app.ledger.store import store_for
+
+    store = store_for(settings)
+    if store is not None:
+        store.ping()
+
+
 CHECKS: dict[str, Callable[[Settings], None]] = {"storage": _storage, "search": _search, "agents": _agents}
+
+
+def _configured_checks(settings: Settings) -> dict[str, Callable[[Settings], None]]:
+    """The checks that apply: the ledger is only checked where it is configured."""
+    checks = dict(CHECKS)
+    if settings.ledger_backend or settings.cosmos_endpoint:
+        checks["ledger"] = _ledger
+    return checks
 
 
 def check_dependencies(settings: Settings) -> dict[str, str]:
     """Run every check; never raises. Blocking: call from a worker thread."""
     results: dict[str, str] = {}
-    for name, check in CHECKS.items():
+    for name, check in _configured_checks(settings).items():
         try:
             check(settings)
             results[name] = OK

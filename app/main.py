@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from app import health, logging_setup
 from app.auth.entra import log_auth_mode
 from app.config import get_settings
-from app.routers import draft, kb, ops, outputs, rfp, template
+from app.routers import draft, kb, ops, outputs, projects, rfp, template
 from app.routers import jobs as jobs_router
 from app.services import jobs
 
@@ -101,7 +101,7 @@ async def azure_service_failure(request: Request, exc: Exception):
         },
     )
 
-for module in (ops, rfp, draft, jobs_router, kb, outputs, template):
+for module in (ops, rfp, draft, jobs_router, projects, kb, outputs, template):
     app.include_router(module.router)
 
 # The UI only runs scripts served from /static (it has no inline handlers), so an injected script

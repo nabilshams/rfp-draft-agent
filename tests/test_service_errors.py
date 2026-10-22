@@ -186,6 +186,42 @@ class TestDependencyChecks:
         assert set(health.check_dependencies(settings).values()) == {"ok"}
         assert calls == [("storage", "rfp-uploads"), ("search",), ("agents", 1)]
 
+    def test_the_ledger_is_checked_only_where_it_is_configured(self, monkeypatch, settings):
+        self.patch_checks(monkeypatch, storage=None)
+        assert "ledger" not in health.check_dependencies(settings)
+
+        configured = make_settings(ledger_backend="memory")
+        assert health.check_dependencies(configured) == {"storage": "ok", "ledger": "ok"}
+
+    def test_a_ledger_that_cannot_be_reached_is_reported_like_the_other_services(self, monkeypatch):
+        self.patch_checks(monkeypatch, storage=None)
+        monkeypatch.setattr(
+            "app.ledger.store.store_for",
+            lambda _s: type("S", (), {"ping": lambda self: (_ for _ in ()).throw(ServiceRequestError(message="dns"))})(),
+        )
+        configured = make_settings(cosmos_endpoint="https://cosmos.example")
+        assert health.check_dependencies(configured) == {"storage": "ok", "ledger": "unreachable"}
+
+    def test_the_cosmos_client_uses_the_configured_endpoint_database_and_container(self, monkeypatch):
+        from types import SimpleNamespace
+
+        made = []
+
+        class FakeClient:
+            def __init__(self, endpoint, credential):
+                made.append((endpoint, credential))
+
+            def get_database_client(self, name):
+                return SimpleNamespace(get_container_client=lambda container: (name, container))
+
+        monkeypatch.setattr("azure.cosmos.CosmosClient", FakeClient)
+        monkeypatch.setattr(azure_clients, "credential", lambda: "the-credential")
+        configured = make_settings(cosmos_endpoint="https://cosmos.example", cosmos_database="db", cosmos_container="c")
+
+        assert azure_clients.cosmos_container(configured) == ("db", "c")
+        assert azure_clients.cosmos_container(configured) == ("db", "c")  # cached: one client
+        assert made == [("https://cosmos.example", "the-credential")]
+
 
 class TestStartupLogging:
     def test_a_failed_check_is_logged_as_an_error_with_the_outcome(self, monkeypatch, caplog):

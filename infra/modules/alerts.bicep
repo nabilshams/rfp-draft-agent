@@ -7,6 +7,8 @@ param appInsightsId string
 param containerAppId string
 @description('Where to send alert emails. Leave empty to create the alerts without notifications.')
 param alertEmail string = ''
+@description('Cosmos DB account of the project ledger. Empty skips its alert.')
+param cosmosAccountId string = ''
 param namePrefix string
 
 var notify = !empty(alertEmail)
@@ -113,6 +115,43 @@ resource restarts 'Microsoft.Insights/metricAlerts@2018-03-01' = {
           operator: 'GreaterThan'
           threshold: 2
           timeAggregation: 'Total'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: notify ? [{ actionGroupId: actionGroup.id }] : []
+  }
+}
+
+// The ledger refusing or throttling requests: server errors (500/503) or throttling (429) on Cosmos DB.
+resource ledgerErrors 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(cosmosAccountId)) {
+  name: '${namePrefix}-ledger-errors'
+  location: 'global'
+  tags: tags
+  properties: {
+    description: 'More than 5 ledger requests were throttled or failed on the server in 15 minutes.'
+    severity: 2
+    enabled: true
+    scopes: [cosmosAccountId]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'ledger-errors'
+          metricNamespace: 'Microsoft.DocumentDB/databaseAccounts'
+          metricName: 'TotalRequests'
+          dimensions: [
+            {
+              name: 'StatusCode'
+              operator: 'Include'
+              values: ['429', '500', '503']
+            }
+          ]
+          operator: 'GreaterThan'
+          threshold: 5
+          timeAggregation: 'Count'
           criterionType: 'StaticThresholdCriterion'
         }
       ]
