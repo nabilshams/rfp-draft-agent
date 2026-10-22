@@ -197,6 +197,28 @@ class TestStoreContract:
 
 
 class TestCosmosSpecifics:
+    def test_a_delete_that_fails_part_way_leaves_the_project_document_so_it_can_be_retried(self):
+        container = FakeCosmosContainer()
+        store = CosmosStore(container)
+        store.apply("p1", [create(doc("project", kind="project", owner="a", groups=[]))])
+        for start in range(0, 250, 100):
+            store.apply("p1", [create(doc(f"req:{i}")) for i in range(start, min(start + 100, 250))])
+        real = container.execute_item_batch
+        calls = []
+
+        def flaky(batch_operations, partition_key):
+            calls.append(len(batch_operations))
+            if len(calls) == 2:
+                raise RuntimeError("throttled")
+            return real(batch_operations, partition_key)
+
+        container.execute_item_batch = flaky
+        with pytest.raises(RuntimeError):
+            store.delete_project("p1")
+
+        assert store.get("p1", "project") is not None  # still reachable: the owner can try again
+        container.execute_item_batch = real
+        assert store.delete_project("p1") == 151 and store.get("p1", "project") is None
     def test_only_the_etag_survives_from_the_services_bookkeeping_fields(self):
         container = FakeCosmosContainer()
         store = CosmosStore(container)

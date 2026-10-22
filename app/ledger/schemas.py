@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.ingestion.pipeline import RedactedRecords, RedactedText
-from app.validation import RfpId
+from app.validation import Filename, RfpId
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Short = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
@@ -23,7 +23,7 @@ class ProjectCreate(BaseModel):
 
     name: Name
     rfp_id: RfpId | None = None
-    filename: str | None = None  # which file of the RFP, when it has several
+    filename: Filename | None = None  # which file of the RFP, when it has several
     requirements: RedactedRecords | None = None
     share_with_groups: list[str] = Field(default_factory=list, max_length=20)
 

@@ -124,6 +124,16 @@ class TestCreate:
         rfp_id = await upload_rfp(api, A)
         assert (await api.post("/projects", json={"name": "x", "rfp_id": rfp_id}, headers=B)).status_code == 404
 
+    @pytest.mark.parametrize("filename", ["../abc/rfp.docx", "..\\other.docx", "a/b.docx", ".."])
+    async def test_a_file_name_cannot_reach_another_users_rfp(self, api, filename):
+        """Regression: the file name is joined to the RFP id to find the blob, so it must be a plain name."""
+        victim = await upload_rfp(api, B)
+        mine = await upload_rfp(api, A)
+        response = await api.post("/projects", json={"name": "x", "rfp_id": mine, "filename": f"../{victim}/rfp.docx"}, headers=A)
+        assert response.status_code == 422
+        assert (await api.post("/projects", json={"name": "x", "rfp_id": mine, "filename": filename}, headers=A)).status_code == 422
+        assert (await api.get("/projects", headers=A)).json()["projects"] == []
+
     async def test_unknown_fields_are_refused(self, api):
         response = await api.post("/projects", json={"name": "x", "requirements": REQUIREMENTS, "owner": "user-z"}, headers=A)
         assert response.status_code == 422

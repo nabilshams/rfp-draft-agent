@@ -284,7 +284,11 @@ class CosmosStore:
             raise
 
     def delete_project(self, project_id: str) -> int:
-        """Remove every document of the project; returns how many."""
+        """Remove every document of the project; returns how many.
+
+        The ``project`` document goes last: it is what makes the rest reachable, so if a batch fails part-way the
+        project is still visible to its owner and the delete can simply be retried.
+        """
         ids = [
             item["id"]
             for item in self._container.query_items(
@@ -293,6 +297,7 @@ class CosmosStore:
                 partition_key=project_id,
             )
         ]
+        ids = [i for i in ids if i != "project"] + (["project"] if "project" in ids else [])
         for start in range(0, len(ids), MAX_BATCH):
             self._container.execute_item_batch(
                 batch_operations=[("delete", (doc_id,)) for doc_id in ids[start : start + MAX_BATCH]],
