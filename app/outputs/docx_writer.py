@@ -15,6 +15,8 @@ from typing import Any
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from app.ingestion.provenance import describe_source
+
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "rfp_response_template.docx"
@@ -239,6 +241,9 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
                 url = ev.get("source_url", "")
                 quote = ev.get("quote", "")
                 doc.add_paragraph(f"• {title}: {url}")
+                label = describe_source(ev)
+                if label:
+                    doc.add_paragraph(f"  ({label})")
                 if quote:
                     quote_para = doc.add_paragraph(f'  "{quote}"')
                     quote_para.style = doc.styles["Quote"] if "Quote" in [s.name for s in doc.styles] else None

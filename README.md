@@ -115,6 +115,10 @@ cp .env.example .env
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything) |
 | `SEARCH_SEMANTIC_RANKER` | Re-rank results with Azure AI Search's semantic ranker. A metered feature that needs the Basic tier or above; off by default (default: `false`) |
 | `SEARCH_MAX_CONTEXT_DOCS` | Cap on documents shared by many requirements in one prompt: full drafts and section narratives (default: `15`) |
+| `KB_TIER_WEIGHTS` | How much a source type moves a result up or down: `authoritative=1.3,approved_answer=1.15,historical=1.0,external=0.9`. The search score is multiplied by the weight; `1` changes nothing |
+| `KB_STATUS_WEIGHTS` | Same for approval status: `approved=1.0,unreviewed=1.0,draft=0.8,superseded=0.5` |
+| `KB_FRESHNESS_HALF_LIFE_DAYS` / `KB_FRESHNESS_FLOOR` | Age weighting: a document's weight falls from 1.0 towards the floor (default `0.7`), halfway after the half-life (default `730` days). `0` turns freshness off |
+| `SEARCH_CANDIDATE_FACTOR` | Results are fetched this many times wider than `SEARCH_TOP_K` (default `3`), re-ordered by the weights, then cut to top-k |
 | `ADMIN_OIDS` | Comma-separated object IDs of administrators (see [Access model](#access-model)); empty by default |
 | `MAX_UPLOAD_MB` | Largest accepted upload (default: `25`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-user requests per minute on the expensive endpoints (default: `60`, `0` = off) |
@@ -287,16 +291,26 @@ share it with groups you belong to.
 curl -X POST http://localhost:8000/kb/upload \
   -F "file=@solution_guide.pdf" \
   -F "client_id=acme" -F "project_id=proj-42" -F "solution_area=cloud" \
-  -F "share_with_groups=group-id-1,group-id-2"   # optional; default: private
+  -F "share_with_groups=group-id-1,group-id-2" \   # optional; default: private
+  -F "source_type=approved_answer" -F "effective_date=2026-01-15" -F "version=3" \
+  -F "authority=Security team" -F "approval_status=approved"   # all optional; see below
 ```
 
 Stored as `client_id/project_id/solution_area/filename`. Uploading the same name again replaces the document
 and its sharing; only its owner (or an admin) can do that.
 
+**Source types.** `source_type` says how far a document should be trusted: `authoritative` (current policy,
+certifications, product facts; **only an administrator can set it**), `approved_answer` (a reviewed past answer),
+`historical` (the default: old proposals, anything unreviewed) or `external`. `effective_date` (`YYYY-MM-DD`,
+default today), `version`, `authority` (who vouches for it), `owner_name` and `approval_status` (`approved`,
+`unreviewed` (default), `draft`, `superseded`) complete the provenance. It is stored on the blob, copied onto every
+chunk in the search index, and a replaced document keeps whatever it had for fields you don't repeat.
+
 ### `POST /kb/ingest`
 Re-ingest a KB document you own. Who can retrieve it comes from the sharing recorded on the document, never
 from the request (sending `oids` or `groups` is rejected with 422). An admin ingesting a document that has no
-recorded owner becomes its owner.
+recorded owner becomes its owner. The same provenance fields as on upload can be sent to change them without
+uploading the file again (`{"blob_name": "...", "source_type": "approved_answer", "version": "4"}`).
 
 ```bash
 curl -X POST http://localhost:8000/kb/ingest \
@@ -551,6 +565,22 @@ returned by Bing grounding when it is used for that request. After every generat
 section narratives and `/answer`) markdown links to any other URL are reduced to plain text and `evidence`
 entries that cite any other URL are dropped. URLs are compared ignoring a trailing slash and percent-encoding.
 
+**Current, authoritative sources rank first.** Every chunk carries its document's provenance (source type,
+approval status, effective date, version) and where it came from (section heading, and page for PDFs). After
+retrieval the search score is multiplied by a weight for the source type, approval status and age (see `KB_*`
+settings), so a current policy outranks an older proposal that happens to match the wording better. Nothing is
+hidden: lower-ranked sources still appear, after the better ones. The prompt labels each source
+(`Source: authoritative, approved, effective 2026-09-01, version 4, section "3. Encryption", page 7`) and tells the
+model to prefer the more authoritative and recent source and to record any disagreement under `risks`. Evidence
+entries in a response carry the same fields (`source_type`, `effective_date`, `version`, `section`, `page`), and
+the UI, the Word document and the compliance matrix show them.
+
+**Adding provenance to existing documents.** The index gains the new fields automatically when the app starts
+(an additive change; no downtime). Chunks indexed earlier have no values until the document is re-indexed:
+an administrator runs `POST /kb/reindex` (or "Re-index All" in the UI). Documents that never had provenance are
+treated as `historical` and `unreviewed`, dated by when the file was last changed, so nothing is promoted by
+accident; change one with `POST /kb/ingest` and the provenance fields.
+
 **Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
 a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated
 answer or section narrative must also appear in what the model was given (the retrieved sources, the requirement,
@@ -575,7 +605,8 @@ Following the **"Less is More"** principle:
 1. **Only index accurate, unique, relevant content** – remove conflicting or duplicative sources
 2. **Segment by client/project/solution area** – use the blob path convention: `/kb/{client_id}/{project_id}/{solution_area}/`
 3. **Sanitize before indexing** – the ingestion pipeline automatically redacts pricing/PII per `config/redaction_policy.yml`
-4. **Rotate and refresh** – set `last_reviewed_date` and periodically remove stale content
+4. **Rotate and refresh** – give every document a real `effective_date` and `version`, mark replaced material
+   `superseded`, and periodically remove stale content. Old documents are ranked lower, not hidden
 5. **Maintain consistent tone** – curate source docs for professional, concise language
 
 ---
@@ -716,7 +747,8 @@ rfp-draft-agent/
 │   ├── evaluation.py              # Retrieval metrics (hit rate, recall@k, MRR)
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
-│   │   ├── kb_ingest.py           # Blob → chunk → embed → index
+│   │   ├── kb_ingest.py           # Blob → chunk (section, page) → embed → index
+│   │   ├── provenance.py          # Source types, dates, versions and the ranking weights
 │   │   ├── pipeline.py            # The one redaction path for uploads and request bodies
 │   │   └── redaction.py           # Regex-based redaction engine
 │   ├── outputs/

@@ -10,9 +10,15 @@ from fastapi import HTTPException
 
 from app import azure_clients
 from app.agents.retrieval import escape_odata_literal
-from app.auth.access import KbAcl, can_manage, can_view_kb, parse_kb_acl
+from app.auth.access import KbAcl, can_manage, can_view_kb, is_admin, parse_kb_acl
 from app.auth.entra import UserClaims
 from app.config import Settings
+from app.ingestion.provenance import (
+    Provenance,
+    ProvenanceError,
+    build_provenance,
+    provenance_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +28,41 @@ _MAX_CHUNKS_PER_DOCUMENT = 200
 
 def existing_kb_acl(container, blob_name: str) -> tuple[bool, KbAcl | None]:
     """(exists, recorded ACL) for a KB blob."""
+    exists, acl, _ = existing_kb_document(container, blob_name)
+    return exists, acl
+
+
+def existing_kb_document(container, blob_name: str) -> tuple[bool, KbAcl | None, Provenance]:
+    """(exists, recorded ACL, recorded provenance) for a KB blob."""
     try:
         props = container.get_blob_client(blob_name).get_blob_properties()
     except ResourceNotFoundError:
-        return False, None
-    return True, parse_kb_acl(props.metadata)
+        return False, None, Provenance()
+    return True, parse_kb_acl(props.metadata), provenance_from_metadata(props.metadata, props.last_modified)
+
+
+def checked_provenance(
+    user: UserClaims, settings: Settings, *, content_changed: bool = False, **fields
+) -> Provenance:
+    """Provenance built from user input (400 if invalid).
+
+    ``authoritative`` is a claim of trust, so only an administrator can set it, and only an administrator can
+    replace the content of a document that has it. A non-admin owner can still re-ingest such a document (nothing
+    about it changes) or demote it.
+    """
+    base = fields.get("base")
+    try:
+        provenance = build_provenance(**fields)
+    except ProvenanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if provenance.source_type == "authoritative" and not is_admin(user, settings):
+        already_authoritative = base is not None and base.source_type == "authoritative"
+        if not already_authoritative or content_changed:
+            raise HTTPException(
+                status_code=403,
+                detail="Only an administrator can mark a source as authoritative or replace one that is",
+            )
+    return provenance
 
 
 def load_kb_document(container, blob_name: str, user: UserClaims, settings: Settings) -> KbAcl | None:

@@ -20,6 +20,7 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import unquote
 
@@ -30,12 +31,17 @@ from app import azure_clients
 from app.agents.retrieval import build_odata_filter
 from app.agents.untrusted import fence
 from app.config import get_settings
+from app.ingestion.provenance import describe_source
 from app.ingestion.redaction import get_redaction_engine
 
 logger = logging.getLogger(__name__)
 
 _VECTOR_FIELD = "contentVector"
-_SELECT = ["content", "title", "source_url"]
+_BASE_SELECT = ["content", "title", "source_url"]
+# Provenance and location of the chunk. An index created before provenance existed doesn't have these fields until
+# it is updated (the app does so at startup); searching it then falls back to the base fields.
+_PROVENANCE_SELECT = ["source_type", "authority", "effective_date", "version", "approval_status", "section", "page"]
+_SELECT = _BASE_SELECT + _PROVENANCE_SELECT
 _EMBED_BATCH_SIZE = 16
 _MAX_QUERY_CHARS = 2000
 _MAX_DOC_CHARS = 1500
@@ -109,6 +115,9 @@ def search_kb(
     top_k = top_k or settings.search_top_k
     min_score = settings.search_min_score if min_score is None else min_score
     use_semantic = settings.search_semantic_ranker if semantic is None else semantic
+    policy = settings.ranking_policy()
+    # Look wider than top_k, because provenance may move a current document from just outside the cut into it
+    candidates = top_k * settings.search_candidate_factor
 
     options: dict[str, Any] = {
         "search_text": query,
@@ -119,11 +128,11 @@ def search_kb(
             user_oid=user_oid,
             user_groups=user_groups,
         ),
-        "top": top_k,
-        "select": _SELECT,
+        "top": candidates,
+        "select": list(_SELECT),
     }
     if vector:
-        options["vector_queries"] = [_vector_query(vector, max(top_k * 2, 10))]
+        options["vector_queries"] = [_vector_query(vector, max(candidates * 2, 10))]
         options["vector_filter_mode"] = VectorFilterMode.PRE_FILTER  # apply access filters before the kNN cut-off
     if use_semantic:
         options["query_type"] = "semantic"
@@ -139,8 +148,12 @@ def search_kb(
             logger.warning("Search index not found; the knowledge base is empty")
             return []
         except HttpResponseError as exc:
-            # Degrade rather than fail: drop the semantic ranker first, then the vector query.
-            if "query_type" in options:
+            # Degrade rather than fail: drop provenance fields an old index lacks, then the semantic ranker,
+            # then the vector query.
+            if options["select"] != _BASE_SELECT and _mentions_unknown_field(exc):
+                logger.warning("The search index has no provenance fields yet (%s); searching without them", exc.message)
+                options["select"] = list(_BASE_SELECT)
+            elif "query_type" in options:
                 logger.warning("Semantic ranking unavailable (%s); retrying without it", exc.message)
                 options.pop("query_type")
                 options.pop("semantic_configuration_name", None)
@@ -161,11 +174,13 @@ def search_kb(
             "source_url": r.get("source_url", ""),
             "score": r.get("@search.score", 0),
             "reranker_score": r.get("@search.reranker_score"),
+            **_provenance_of(r, engine),
         }
         for r in results
     ]
     if min_score > 0:
         docs = [d for d in docs if _score(d) >= min_score]
+    docs = rank_by_provenance(docs, policy)[:top_k]
     logger.info(
         "Search (%s%s) returned %d results for query: %.60s",
         "hybrid" if "vector_queries" in options else "keyword",
@@ -174,6 +189,43 @@ def search_kb(
         query,
     )
     return docs
+
+
+def _mentions_unknown_field(exc: HttpResponseError) -> bool:
+    """Whether Azure rejected the query because the index lacks one of the provenance fields."""
+    message = (exc.message or "").lower()
+    return "could not find a property" in message or any(name in message for name in _PROVENANCE_SELECT)
+
+
+def _provenance_of(result: dict[str, Any], engine) -> dict[str, Any]:
+    """The provenance and location fields of a search hit, as plain values (empty when the chunk has none)."""
+    effective = result.get("effective_date")
+    if hasattr(effective, "date"):
+        effective = effective.date().isoformat()
+    page = result.get("page")
+    return {
+        "source_type": result.get("source_type") or "",
+        "authority": engine.redact(result.get("authority") or "").sanitized_text,
+        "effective_date": str(effective)[:10] if effective else "",
+        "version": engine.redact(result.get("version") or "").sanitized_text,
+        "approval_status": result.get("approval_status") or "",
+        "section": engine.redact(result.get("section") or "").sanitized_text,
+        "page": page if isinstance(page, int) else None,
+    }
+
+
+def rank_by_provenance(docs: list[dict[str, Any]], policy, today: date | None = None) -> list[dict[str, Any]]:
+    """*docs* re-ordered so that authoritative, approved and recent material comes first.
+
+    The search score is multiplied by the document's weight (source type × approval status × freshness); nothing
+    is removed. Each doc gets ``rank_score`` and ``weight``. Equal scores keep the search order.
+    """
+    today = today or datetime.now(UTC).date()
+    ranked = []
+    for position, doc in enumerate(docs):
+        weight = policy.weight(doc.get("source_type", ""), doc.get("approval_status", ""), doc.get("effective_date", ""), today)
+        ranked.append((_score(doc) * weight, -position, {**doc, "weight": round(weight, 4), "rank_score": _score(doc) * weight}))
+    return [doc for _, _, doc in sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True)]
 
 
 def merge_docs(doc_lists: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
@@ -213,9 +265,61 @@ def format_context(docs: list[dict[str, Any]]) -> str:
     parts = ["## Internal Knowledge Base Sources\n"]
     for i, doc in enumerate(docs, 1):
         # Documents come from uploads, so their text is fenced as data (see app.agents.untrusted).
-        body = f"Title: {doc.get('title', '')}\nURL: {doc.get('source_url', '')}\n\n{doc.get('content', '')[:_MAX_DOC_CHARS]}"
+        label = describe_source(doc)
+        label_line = f"Source: {label}\n" if label else ""
+        body = (
+            f"Title: {doc.get('title', '')}\n{label_line}URL: {doc.get('source_url', '')}\n\n"
+            f"{doc.get('content', '')[:_MAX_DOC_CHARS]}"
+        )
         parts.append(f"### KB Source {i}\n{fence('KB-SOURCE', body)}\n")
     return "\n".join(parts)
+
+
+_EVIDENCE_FIELDS = ("source_type", "authority", "effective_date", "version", "approval_status", "section", "page")
+
+
+def _words(text: str) -> str:
+    return " ".join(str(text).lower().split())
+
+
+def enrich_evidence(value: Any, docs: list[dict[str, Any]]) -> Any:
+    """Add to every evidence entry of *value* what is known of its source: type, date, version, section and page.
+
+    An entry matches the retrieved chunk of the same URL whose text contains its quote (else the best-ranked
+    chunk of that URL). Entries that match no chunk are left as they are (citation checks drop those).
+    """
+    if not docs:
+        return value
+
+    def best(entry: dict[str, Any]) -> dict[str, Any] | None:
+        url = _normalize_url(str(entry.get("source_url", "")))
+        same = [d for d in docs if _normalize_url(d.get("source_url", "")) == url]
+        quote = _words(entry.get("quote", ""))
+        if len(quote) >= 15:
+            for doc in same:
+                if quote in _words(doc.get("content", "")):
+                    return doc
+        return same[0] if same else None
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            result = {k: walk(v) for k, v in node.items()}
+            if isinstance(node.get("evidence"), list):
+                result["evidence"] = [_enriched(e) for e in result["evidence"]]
+            return result
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    def _enriched(entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+        doc = best(entry)
+        if doc is None:
+            return entry
+        return {**entry, **{k: doc.get(k) for k in _EVIDENCE_FIELDS if doc.get(k) not in (None, "")}}
+
+    return walk(value)
 
 
 @dataclass

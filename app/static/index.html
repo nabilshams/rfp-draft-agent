@@ -33,6 +33,29 @@
         <div><label>Solution Area</label><input type="text" id="kbSolutionArea" value="general"></div>
       </div>
       <div style="margin-bottom:12px"><label>Share with groups (optional)</label><input type="text" id="kbShareGroups" placeholder="Group IDs, comma-separated. Leave empty to keep the document private to you."></div>
+      <div class="form-row">
+        <div><label>Source type</label>
+          <select id="kbSourceType">
+            <option value="" selected>Default (historical; a replaced document keeps its type)</option>
+            <option value="historical">Historical (past proposal, unreviewed)</option>
+            <option value="approved_answer">Approved answer</option>
+            <option value="authoritative">Authoritative (current policy; admins only)</option>
+            <option value="external">External</option>
+          </select></div>
+        <div><label>Effective date</label><input type="date" id="kbEffectiveDate"></div>
+        <div><label>Version</label><input type="text" id="kbVersion" maxlength="100" placeholder="e.g. 3.1"></div>
+      </div>
+      <div class="form-row">
+        <div><label>Authority</label><input type="text" id="kbAuthority" maxlength="100" placeholder="Who vouches for it, e.g. Security team"></div>
+        <div><label>Approval</label>
+          <select id="kbApproval">
+            <option value="" selected>Default (unreviewed; a replaced document keeps its status)</option>
+            <option value="unreviewed">Unreviewed</option>
+            <option value="approved">Approved</option>
+            <option value="draft">Draft</option>
+            <option value="superseded">Superseded</option>
+          </select></div>
+      </div>
       <div class="upload-zone" id="kbUploadZone"><div class="icon">&#128193;</div><p>Drag &amp; drop reference documents, or <strong>click to browse</strong></p><p style="font-size:11px;color:#999;margin-top:3px">PDF and DOCX. Multiple files OK.</p><div class="filename" id="kbFileNames" style="display:none"></div></div>
       <input type="file" id="kbFileInput" accept=".pdf,.docx" multiple style="display:none">
       <button class="btn btn-primary" id="btnKbUpload" disabled>Upload &amp; Index</button>

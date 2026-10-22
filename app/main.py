@@ -62,6 +62,10 @@ async def lifespan(app: FastAPI):
 
 
 def _log_dependency_status(settings) -> None:
+    # Bring the search index up to the current definition (it only ever gains fields), so retrieval can rely on them.
+    from app.ingestion import kb_ingest
+
+    kb_ingest._ensure_index_once()
     results = health.check_dependencies(settings)
     level = logging.INFO if all(v == health.OK for v in results.values()) else logging.ERROR
     logger.log(level, "Dependency status: %s", ", ".join(f"{k}={v}" for k, v in results.items()))

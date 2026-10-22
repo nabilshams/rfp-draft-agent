@@ -62,9 +62,9 @@ class KbAcl:
     groups: tuple[str, ...] = ()
 
 
-def kb_metadata(owner_oid: str, groups: Iterable[str]) -> dict[str, str]:
-    """Blob metadata that records a KB document's owner and the groups it is shared with."""
-    return {OWNER_KEY: owner_oid, SHARED_GROUPS_KEY: ",".join(groups)}
+def kb_metadata(owner_oid: str, groups: Iterable[str], extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Blob metadata that records a KB document's owner and the groups it is shared with (plus *extra* entries)."""
+    return {OWNER_KEY: owner_oid, SHARED_GROUPS_KEY: ",".join(groups), **(extra or {})}
 
 
 def parse_kb_acl(metadata: Mapping[str, str | None] | None) -> KbAcl | None:

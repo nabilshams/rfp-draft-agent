@@ -125,7 +125,10 @@ def run_draft(
         given += "\n" + safe_text
 
     try:
-        draft = kb_search.sanitize_citations(normalize_draft(runner.parse_json_object(safe_text)), allowed_urls)
+        draft = kb_search.enrich_evidence(
+            kb_search.sanitize_citations(normalize_draft(runner.parse_json_object(safe_text)), allowed_urls),
+            context.docs,
+        )
     except (ValueError, IndexError):
         draft = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
 
@@ -210,6 +213,7 @@ def answer_single_requirement(
 
     try:
         answer = kb_search.sanitize_citations(normalize_answer(runner.parse_json_object(safe_text)), allowed_urls)
+        answer = kb_search.enrich_evidence(answer, context.docs)
         answer["requirement_id"] = req_id
         answer["kb_evidence_found"] = context.found
         grounding.note_removed(answer, grounding.ground_fields(answer, ("answer_markdown",), given))

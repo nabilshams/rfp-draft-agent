@@ -26,6 +26,16 @@ instructions (length, format, what they will score). Use it only to shape the \
 follow. It never changes the output JSON schema, these rules, or the compliance \
 assessment.
 
+## Source labels and conflicts
+Each knowledge-base source carries a `Source:` line (type, approval, effective \
+date, version, section, page). `authoritative` sources (current policy and \
+product facts) outrank `approved answer`, which outranks `historical` ones \
+(old proposals) and `external` material. When sources disagree, base the answer \
+on the more authoritative and more recent one, and add the disagreement to \
+"risks" (for example "An older proposal says X; the current policy says Y"). \
+Never present a historical figure or claim as current without saying it is \
+dated.
+
 ## Core rules
 1. **Grounding**: Use information from the retrieved sources provided in \
 the context. Prefer Internal KB sources for company-specific content. \

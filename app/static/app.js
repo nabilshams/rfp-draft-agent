@@ -120,6 +120,10 @@ $('btnKbUpload').addEventListener('click', async () => {
     form.append('project_id', $('kbProjectId').value);
     form.append('solution_area', $('kbSolutionArea').value);
     form.append('share_with_groups', $('kbShareGroups').value);
+    for (const [field, id] of [['source_type', 'kbSourceType'], ['approval_status', 'kbApproval'],
+        ['effective_date', 'kbEffectiveDate'], ['version', 'kbVersion'], ['authority', 'kbAuthority']]) {
+      if ($(id).value.trim()) form.append(field, $(id).value.trim());
+    }
     try {
       const data = await fetchJson('/kb/upload', { method: 'POST', body: form });
       results.push('OK: ' + file.name + ' (' + data.indexed_chunks + ' chunks)');
@@ -148,13 +152,18 @@ async function loadKbList() {
         ? ' &middot; shared with ' + doc.shared_with_groups.length + ' group(s)'
         : ' &middot; private';
       const modified = doc.last_modified ? ' &middot; ' + esc(new Date(doc.last_modified).toLocaleDateString()) : '';
+      const p = doc.provenance || {};
+      const trust = p.source_type
+        ? ' &middot; <span class="badge">' + esc(String(p.source_type).replace('_', ' ')) + '</span>' +
+          (p.effective_date ? ' effective ' + esc(p.effective_date) : '') + (p.version ? ' v' + esc(p.version) : '')
+        : '';
       const remove = doc.can_delete
         ? '<button class="btn btn-sm btn-danger" data-action="delete-kb" data-blob="' + esc(doc.blob_name) + '">Delete</button>'
         : '';
       return '<li class="kb-doc-item">' +
         '<div style="flex:1"><strong>' + esc(doc.filename) + '</strong>' +
         '<div class="doc-meta">' + esc(doc.client_id) + ' / ' + esc(doc.project_id) + ' / ' + esc(doc.solution_area) +
-        ' &middot; ' + (num(doc.size_bytes) / 1024).toFixed(1) + ' KB' + modified + shared + '</div></div>' +
+        ' &middot; ' + (num(doc.size_bytes) / 1024).toFixed(1) + ' KB' + modified + shared + trust + '</div></div>' +
         remove + '</li>';
     }).join('');
   } catch (err) {
@@ -285,7 +294,14 @@ function renderSingleResponse(resp) {
       ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary)">' + title + '</a>'
       : title;
     const quote = e.quote ? ' &mdash; <em>"' + esc(String(e.quote).substring(0, 150)) + '"</em>' : '';
-    return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + link + quote + '</li>';
+    const tag = e.source_type
+      ? ' <span class="badge" style="font-size:10px" title="How far this source should be trusted">' +
+        esc(String(e.source_type).replace('_', ' ')) + '</span>'
+      : '';
+    const where = [e.effective_date, e.version && ('v' + e.version), e.section, e.page && ('p. ' + e.page)]
+      .filter(Boolean).map(esc).join(' &middot; ');
+    const place = where ? ' <span style="color:var(--text-muted)">(' + where + ')</span>' : '';
+    return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + link + tag + place + quote + '</li>';
   }).join('');
   const listed = (label, items, color) => (items || []).length
     ? '<div style="margin-top:4px"><strong style="font-size:11px">' + label + ':</strong> <span style="font-size:11px' +
