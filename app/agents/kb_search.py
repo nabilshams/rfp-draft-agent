@@ -27,7 +27,7 @@ from urllib.parse import unquote
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.search.documents.models import VectorFilterMode, VectorizedQuery
 
-from app import azure_clients
+from app import azure_clients, kb_refs
 from app.agents.retrieval import build_odata_filter
 from app.agents.untrusted import fence
 from app.config import get_settings
@@ -171,7 +171,14 @@ def search_kb(
         {
             "content": engine.redact(r.get("content", "")).sanitized_text,
             "title": engine.redact(r.get("title", "")).sanitized_text,
-            "source_url": r.get("source_url", ""),
+            # A knowledge-base blob URL (which names the customer's folder) becomes an opaque reference link
+            "source_url": kb_refs.opaque_url(
+                r.get("source_url", ""), settings.azure_storage_account_url, settings.storage_kb_container
+            ),
+            "blob_name": kb_refs.blob_name_of_url(
+                r.get("source_url", ""), settings.azure_storage_account_url, settings.storage_kb_container
+            )
+            or "",
             "score": r.get("@search.score", 0),
             "reranker_score": r.get("@search.reranker_score"),
             **_provenance_of(r, engine),
@@ -419,7 +426,10 @@ def _is_allowed(url: str, allowed: set[str]) -> bool:
         return False
     # A link target is cut at the first ')', so a file name containing parentheses yields a truncated
     # URL. Accept such a prefix, but only when it includes a path (scheme://host/...), never a bare host.
-    return any(known == target or (target.count("/") >= 3 and known.startswith(target)) for known in allowed)
+    return any(
+        known == target or ("://" in target and target.count("/") >= 3 and known.startswith(target))
+        for known in allowed
+    )
 
 
 def _strip_unretrieved_links(text: str, allowed: set[str]) -> str:

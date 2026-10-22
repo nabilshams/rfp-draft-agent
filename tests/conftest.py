@@ -14,7 +14,7 @@ os.environ["BING_CONNECTION_ID"] = ""
 # Fixtures shared by the API tests (in-memory Azure fakes and an HTTP client).
 import pytest  # noqa: E402
 
-from app import azure_clients  # noqa: E402
+from app import azure_clients, kb_refs  # noqa: E402
 from app.services import jobs  # noqa: E402
 
 from .test_authorization_api import client, use_settings, world  # noqa: E402, F401
@@ -32,6 +32,7 @@ def no_real_azure_clients(monkeypatch):
 
     azure_clients.reset()
     jobs.reset()
+    kb_refs.refs.forget()
     monkeypatch.setattr("azure.storage.blob.BlobServiceClient", refuse("BlobServiceClient"))
     monkeypatch.setattr("azure.search.documents.SearchClient", refuse("SearchClient"))
     monkeypatch.setattr("azure.search.documents.indexes.SearchIndexClient", refuse("SearchIndexClient"))
