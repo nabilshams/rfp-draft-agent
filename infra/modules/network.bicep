@@ -1,17 +1,20 @@
-// Private networking for the storage account.
+// Private networking for the storage account and the project ledger.
 //
 // A governance policy on some subscriptions forces public network access on storage accounts to Disabled, and
 // even where it doesn't, private access is the safer default for documents that may be confidential. So:
 //   * a VNet with one subnet for the Container Apps environment (delegated to Microsoft.App/environments)
-//     and one for the private endpoint
+//     and one for the private endpoints
 //   * a private endpoint for the storage account's blob service, with the privatelink DNS zone linked to the VNet
 //     so the storage name resolves to the private address from inside it
+//   * the same for the Cosmos DB account (the ledger), with its own privatelink zone
 // Search and AI Services keep their public endpoints (protected by Entra ID and RBAC, key auth disabled).
 
 param location string
 param tags object
 param namePrefix string
 param storageAccountId string
+@description('Resource ID of the Cosmos DB account for the project ledger. Empty skips its private endpoint.')
+param cosmosAccountId string = ''
 
 @description('Address space of the VNet. Change it if it overlaps a network you peer with later.')
 param vnetAddressPrefix string = '10.20.0.0/16'
@@ -109,3 +112,62 @@ resource storageDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroup
 }
 
 output infrastructureSubnetId string = '${vnet.id}/subnets/containerapps'
+
+// ── Cosmos DB (the project ledger) ──────────────────────
+
+var hasCosmos = !empty(cosmosAccountId)
+var cosmosDnsZoneName = 'privatelink.documents.azure.com'
+
+resource cosmosDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (hasCosmos) {
+  name: cosmosDnsZoneName
+  location: 'global'
+  tags: tags
+}
+
+resource cosmosDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (hasCosmos) {
+  parent: cosmosDnsZone
+  name: '${namePrefix}-link'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource cosmosPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (hasCosmos) {
+  name: '${namePrefix}-pe-cosmos'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: '${vnet.id}/subnets/private-endpoints'
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'cosmos'
+        properties: {
+          privateLinkServiceId: cosmosAccountId
+          groupIds: ['Sql']
+        }
+      }
+    ]
+  }
+}
+
+resource cosmosDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = if (hasCosmos) {
+  parent: cosmosPrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'cosmos'
+        properties: {
+          privateDnsZoneId: cosmosDnsZone.id
+        }
+      }
+    ]
+  }
+}

@@ -23,6 +23,7 @@ azure-core==1.41.0
     #   azure-ai-inference
     #   azure-ai-projects
     #   azure-core-tracing-opentelemetry
+    #   azure-cosmos
     #   azure-identity
     #   azure-monitor-opentelemetry
     #   azure-monitor-opentelemetry-exporter
@@ -31,6 +32,8 @@ azure-core==1.41.0
     #   msrest
 azure-core-tracing-opentelemetry==1.0.0b13
     # via azure-monitor-opentelemetry
+azure-cosmos==4.17.1
+    # via -r requirements.in
 azure-identity==1.26.0
     # via
     #   -r requirements.in
@@ -283,6 +286,7 @@ typing-extensions==4.16.0
     #   azure-ai-inference
     #   azure-ai-projects
     #   azure-core
+    #   azure-cosmos
     #   azure-identity
     #   azure-search-documents
     #   azure-storage-blob

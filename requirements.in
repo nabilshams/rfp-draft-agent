@@ -10,6 +10,9 @@ azure-search-documents>=11.6.0b8
 # Azure Storage
 azure-storage-blob>=12.24.0
 
+# Project ledger (Azure Cosmos DB for NoSQL)
+azure-cosmos>=4.9.0
+
 # FastAPI
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0

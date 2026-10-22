@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     # request opts in with allow_web_search; text sent to Bing leaves the Azure compliance boundary.
     bing_connection_id: str = Field("", alias="BING_CONNECTION_ID")
 
+    # ── Project ledger (Azure Cosmos DB for NoSQL) ─────────
+    # Where projects, requirements, answer versions and the audit trail live. Empty COSMOS_ENDPOINT leaves the ledger
+    # off (its endpoints answer 503). LEDGER_BACKEND=memory keeps everything in this process only, for local
+    # development: it is lost on restart and not shared between instances, so never use it for real work.
+    cosmos_endpoint: str = Field("", alias="COSMOS_ENDPOINT")
+    cosmos_database: str = Field("rfp-ledger", alias="COSMOS_DATABASE")
+    cosmos_container: str = Field("ledger", alias="COSMOS_CONTAINER")
+    ledger_backend: Literal["", "cosmos", "memory"] = Field("", alias="LEDGER_BACKEND")
+    ledger_max_requirements: int = Field(1000, alias="LEDGER_MAX_REQUIREMENTS", ge=1, le=5000)
+
     # ── Knowledge-base retrieval ──────────────────────────
     search_top_k: int = Field(5, alias="SEARCH_TOP_K", ge=1, le=20)  # documents retrieved per query
     # Documents scoring below this are dropped. Uses the semantic reranker score (0-4) when the

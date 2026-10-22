@@ -42,6 +42,7 @@ var aiServicesName = 'ais-${token}'
 var projectName = 'proj-${token}'
 var searchName = 'srch-${token}'
 var storageName = 'st${token}'
+var cosmosName = 'cosmos-${token}'
 var registryName = 'cr${token}'
 var logAnalyticsName = 'log-${token}'
 var appInsightsName = 'appi-${token}'
@@ -283,6 +284,17 @@ resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // An environment's network can't be changed after it is created: changing the address ranges or turning this
 // off means deleting and recreating the environment (and the app in it).
 
+// The project ledger (Cosmos DB, serverless, private). The app's identity gets the data-contributor role there.
+module cosmos 'modules/cosmos.bicep' = {
+  name: 'cosmos'
+  params: {
+    location: location
+    tags: tags
+    accountName: cosmosName
+    appPrincipalId: identity.properties.principalId
+  }
+}
+
 module network 'modules/network.bicep' = {
   name: 'network'
   params: {
@@ -290,6 +302,7 @@ module network 'modules/network.bicep' = {
     tags: tags
     namePrefix: 'rfp-${token}'
     storageAccountId: storage.id
+    cosmosAccountId: cosmos.outputs.accountId
   }
 }
 
@@ -343,6 +356,9 @@ var baseEnv = [
   { name: 'STORAGE_RFP_CONTAINER', value: 'rfp-uploads' }
   { name: 'STORAGE_OUTPUT_CONTAINER', value: 'outputs' }
   { name: 'STORAGE_JOBS_CONTAINER', value: 'draft-jobs' }
+  { name: 'COSMOS_ENDPOINT', value: cosmos.outputs.endpoint }
+  { name: 'COSMOS_DATABASE', value: cosmos.outputs.databaseName }
+  { name: 'COSMOS_CONTAINER', value: cosmos.outputs.containerName }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection-string' }
   { name: 'AUTH_MODE', value: authMode }
   { name: 'PARALLELISM', value: '1' }
@@ -569,6 +585,7 @@ module alerts 'modules/alerts.bicep' = {
     appInsightsId: appInsights.id
     containerAppId: apiApp.id
     alertEmail: alertEmail
+    cosmosAccountId: cosmos.outputs.accountId
     namePrefix: 'rfp-${token}'
   }
 }
@@ -581,3 +598,4 @@ output foundryProjectEndpoint string = foundryProjectEndpoint
 output searchEndpoint string = 'https://${search.name}.search.windows.net'
 output searchName string = search.name
 output storageAccountUrl string = storage.properties.primaryEndpoints.blob
+output cosmosEndpoint string = cosmos.outputs.endpoint
