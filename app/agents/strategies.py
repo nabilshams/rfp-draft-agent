@@ -62,7 +62,7 @@ def stream_per_requirement(
         try:
             yield answers.answer_single_requirement(
                 requirement=req,
-                context=retriever.context(i),
+                context=lambda i=i: retriever.context(i),  # retrieved inside the requirement's span
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,
@@ -223,7 +223,7 @@ def stream_map_reduce(
         try:
             result = answers.answer_single_requirement(
                 requirement=req,
-                context=retriever.context(i),
+                context=lambda i=i: retriever.context(i),  # retrieved inside the requirement's span
                 tone=tone,
                 agent_id=agent_id,
                 user_context=user_context,

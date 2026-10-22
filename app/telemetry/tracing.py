@@ -1,8 +1,7 @@
-"""OpenTelemetry + Application Insights tracing setup.
+"""OpenTelemetry + Application Insights setup: exporter and FastAPI instrumentation.
 
-Instruments FastAPI, logs tool calls, retrieval metadata, latency,
-token usage, and redaction events.  Sensitive content is never stored
-in traces – only hashes or redacted excerpts.
+The spans the pipeline adds (stages, tokens, cost) and the rule that no content may appear in them are in
+:mod:`app.telemetry.spans`.
 """
 
 from __future__ import annotations
@@ -53,39 +52,3 @@ def configure_tracing(app: Any) -> None:
     # Instrument FastAPI
     FastAPIInstrumentor.instrument_app(app)
     logger.info("FastAPI OTel instrumentation enabled")
-
-
-def get_tracer(name: str = "rfp-draft-agent") -> trace.Tracer:
-    """Return a named tracer for manual span creation."""
-    return trace.get_tracer(name)
-
-
-# ── Helper decorators / context managers ──────────────────
-
-
-def trace_tool_call(
-    tool_name: str,
-    metadata: dict[str, Any] | None = None,
-) -> trace.Span:
-    """Start a span for a tool call and attach metadata as attributes."""
-    tracer = get_tracer()
-    span = tracer.start_span(f"tool.{tool_name}")
-    if metadata:
-        for k, v in metadata.items():
-            # Never store raw content – store hashes or truncated values
-            safe_val = str(v)[:200] if isinstance(v, str) else str(v)
-            span.set_attribute(f"tool.{tool_name}.{k}", safe_val)
-    return span
-
-
-def record_redaction_event(span: trace.Span, count: int, content_hash: str) -> None:
-    """Attach redaction telemetry to a span without storing raw content."""
-    span.set_attribute("redaction.count", count)
-    span.set_attribute("redaction.content_hash", content_hash)
-
-
-def record_token_usage(span: trace.Span, prompt_tokens: int, completion_tokens: int) -> None:
-    """Attach token-usage counters to a span."""
-    span.set_attribute("llm.prompt_tokens", prompt_tokens)
-    span.set_attribute("llm.completion_tokens", completion_tokens)
-    span.set_attribute("llm.total_tokens", prompt_tokens + completion_tokens)

@@ -92,6 +92,7 @@ cp .env.example .env
 |---|---|
 | `FOUNDRY_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint |
 | `FOUNDRY_MODEL_DEPLOYMENT_NAME` | Model deployment name (default: `gpt-4o`) |
+| `MODEL_INPUT_PRICE_PER_MILLION` / `MODEL_OUTPUT_PRICE_PER_MILLION` | USD per million input / output tokens, used only for the cost estimate in telemetry (defaults `2.5` / `10.0`) |
 | `AZURE_AI_SEARCH_CONNECTION_NAME` | Search service connection name/ID |
 | `AI_SEARCH_INDEX_NAME` | Search index name (default: `rfp-knowledge-base`) |
 | `AZURE_STORAGE_ACCOUNT_URL` | Blob storage account URL |
@@ -453,6 +454,21 @@ restarts (more than 2 in 15 minutes, which is what a crash loop from bad configu
 `azd env set ALERT_EMAIL you@example.com` before `azd provision` to be emailed; without it the alerts still fire and
 appear in the portal. Logs and traces go to Application Insights and Log Analytics (`ContainerAppConsoleLogs_CL`).
 
+**What each draft records.** A draft is one trace. Its root `draft` span carries the job id, approach, requirements
+answered, model calls, input and output tokens and an **estimated cost in USD** (tokens times
+`MODEL_INPUT_PRICE_PER_MILLION` / `MODEL_OUTPUT_PRICE_PER_MILLION`, which default to GPT-4o list prices: set your own;
+this is an estimate, not an Azure bill). Under it, a `requirement` span per requirement holds its stages: `kb.search`
+(results, mode), `llm.run` (model, status, latency, tokens, cost) and the count of unsupported figures removed. Section
+approaches add `section.classify` and `section.narrative`, and storing the documents is `outputs`. They show up in
+Application Insights as dependencies. The ready-made queries are in [`infra/queries/`](infra/queries):
+`draft_cost.kql` (one row per draft with its cost), `draft_trace.kql` (every stage of one job in order) and
+`stage_latency.kql` (where time and money go). A draft that is cancelled or fails still reports what it spent.
+
+**No content in telemetry.** A span can only carry attributes from a fixed list (identifiers, counts, durations,
+tokens, outcomes) and only numbers, booleans or short names. There is no way to attach a prompt, an answer, a
+requirement's text or an exception message, and a test sends secret text through a whole draft and checks it
+appears in no span. Exceptions are recorded by type only.
+
 ### Cost and quota
 
 Rough monthly cost of the defaults in `australiaeast`, idle (check the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator/) for current figures):
@@ -800,7 +816,8 @@ rfp-draft-agent/
 │   │   ├── docx_writer.py         # DOCX generation
 │   │   └── xlsx_writer.py         # XLSX compliance matrix
 │   └── telemetry/
-│       └── tracing.py             # OpenTelemetry + App Insights
+│       ├── tracing.py             # OpenTelemetry + App Insights setup
+│       └── spans.py               # Stage spans, tokens and cost, no-content rule
 ├── config/
 │   └── redaction_policy.yml       # Redaction rules (YAML)
 ├── infra/

@@ -14,6 +14,7 @@ from azure.ai.agents.models import BingGroundingTool, MessageRole
 from app import azure_clients
 from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,40 @@ def _delete_thread(client: AgentsClient, thread_id: str) -> None:
 def run_agent_prompt(agent_id: str, content: str, *, web_search: bool = False) -> AgentRunResult:
     """Send *content* to an agent on a new thread, wait for the run, and return its reply.
 
+    Recorded as an ``llm.run`` span (model, status, latency, tokens, estimated cost) and counted in the current
+    draft's meter. The prompt and the reply are never recorded.
+    """
+    settings = get_settings()
+    with spans.stage(
+        "llm.run", llm__model=settings.foundry_model_deployment_name, web_search=web_search, prompt__chars=len(content)
+    ) as span:
+        started = time.monotonic()
+        result = _run_agent_prompt(agent_id, content, web_search=web_search)
+        input_tokens = result.usage.get("input_tokens", 0)
+        output_tokens = result.usage.get("output_tokens", 0)
+        meter = spans.current_meter()
+        cost = (
+            meter.add_usage(input_tokens, output_tokens)
+            if meter
+            else spans.cost_usd(
+                input_tokens, output_tokens, settings.model_input_price_per_million, settings.model_output_price_per_million
+            )
+        )
+        span.set(
+            llm__status=result.status,
+            outcome="ok" if result.completed else "failed",
+            llm__latency_ms=int((time.monotonic() - started) * 1000),
+            llm__input_tokens=input_tokens,
+            llm__output_tokens=output_tokens,
+            llm__total_tokens=input_tokens + output_tokens,
+            llm__cost_usd=cost,
+            answer__chars=len(result.text),
+        )
+        return result
+
+
+def _run_agent_prompt(agent_id: str, content: str, *, web_search: bool = False) -> AgentRunResult:
+    """The run itself: see :func:`run_agent_prompt`.
     Blocking: call from a worker thread, not from the event loop. The run is cancelled if
     it exceeds ``RUN_TIMEOUT_SECONDS`` (status ``timed_out``), and the thread is always deleted.
     ``web_search`` attaches Bing grounding to this run only; it raises WebSearchNotConfigured if unavailable.

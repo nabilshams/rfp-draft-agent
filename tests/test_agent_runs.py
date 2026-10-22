@@ -67,7 +67,16 @@ class FakeAgentsClient:
 def install_client(monkeypatch):
     def _install(client, timeout=600):
         monkeypatch.setattr(azure_clients, "agents_client", lambda _settings: client)
-        monkeypatch.setattr(runner, "get_settings", lambda: SimpleNamespace(run_timeout_seconds=timeout))
+        monkeypatch.setattr(
+            runner,
+            "get_settings",
+            lambda: SimpleNamespace(
+                run_timeout_seconds=timeout,
+                foundry_model_deployment_name="gpt-4o",
+                model_input_price_per_million=2.5,
+                model_output_price_per_million=10.0,
+            ),
+        )
         monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     return _install

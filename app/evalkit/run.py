@@ -149,7 +149,10 @@ def run_golden(
 
     def answer_with_context(**kwargs: Any) -> dict[str, Any]:
         """Remember what was retrieved for each requirement, then run the real answer step."""
-        held["docs"] = list(kwargs["context"].docs)
+        context = kwargs["context"]
+        if callable(context):
+            context = kwargs["context"] = context()
+        held["docs"] = list(context.docs)
         return real_answer(**kwargs)
 
     real_answer = answers.answer_single_requirement

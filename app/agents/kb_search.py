@@ -33,6 +33,7 @@ from app.agents.untrusted import fence
 from app.config import get_settings
 from app.ingestion.provenance import describe_source
 from app.ingestion.redaction import get_redaction_engine
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
@@ -140,30 +141,35 @@ def search_kb(
 
     client = azure_clients.search_client(settings)
     results: Iterable[dict[str, Any]]
-    while True:
-        try:
-            results = list(client.search(**options))
-            break
-        except ResourceNotFoundError:
-            logger.warning("Search index not found; the knowledge base is empty")
-            return []
-        except HttpResponseError as exc:
-            # Degrade rather than fail: drop provenance fields an old index lacks, then the semantic ranker,
-            # then the vector query.
-            if options["select"] != _BASE_SELECT and _mentions_unknown_field(exc):
-                logger.warning("The search index has no provenance fields yet (%s); searching without them", exc.message)
-                options["select"] = list(_BASE_SELECT)
-            elif "query_type" in options:
-                logger.warning("Semantic ranking unavailable (%s); retrying without it", exc.message)
-                options.pop("query_type")
-                options.pop("semantic_configuration_name", None)
-            elif "vector_queries" in options:
-                logger.warning("Vector search failed (%s); retrying with keyword search only", exc.message)
-                options.pop("vector_queries")
-                options.pop("vector_filter_mode", None)
-            else:
-                raise
-
+    with spans.stage("kb.search", kb__top_k=top_k) as search_span:
+        while True:
+            try:
+                results = list(client.search(**options))
+                break
+            except ResourceNotFoundError:
+                logger.warning("Search index not found; the knowledge base is empty")
+                search_span.set(kb__results=0, outcome="no_index")
+                return []
+            except HttpResponseError as exc:
+                # Degrade rather than fail: drop provenance fields an old index lacks, then the semantic ranker,
+                # then the vector query.
+                if options["select"] != _BASE_SELECT and _mentions_unknown_field(exc):
+                    logger.warning("The search index has no provenance fields yet (%s); searching without them", exc.message)
+                    options["select"] = list(_BASE_SELECT)
+                elif "query_type" in options:
+                    logger.warning("Semantic ranking unavailable (%s); retrying without it", exc.message)
+                    options.pop("query_type")
+                    options.pop("semantic_configuration_name", None)
+                elif "vector_queries" in options:
+                    logger.warning("Vector search failed (%s); retrying with keyword search only", exc.message)
+                    options.pop("vector_queries")
+                    options.pop("vector_filter_mode", None)
+                else:
+                    raise
+        search_span.set(
+            kb__results=len(results),
+            kb__mode=("hybrid" if "vector_queries" in options else "keyword") + ("+semantic" if "query_type" in options else ""),
+        )
     # Redact at retrieval as well as at ingestion: rules and customer names added after a document was
     # indexed then still apply to it. The URL is left exactly as stored so it can still be cited.
     engine = get_redaction_engine()

@@ -92,24 +92,6 @@ def parse_template_sections(template_path: Path | None = None) -> list[dict[str,
     return sections
 
 
-def _replace_placeholder(doc: Document, placeholder: str, value: str) -> None:
-    """Replace ``{{placeholder}}`` across all paragraphs and table cells."""
-    tag = "{{" + placeholder + "}}"
-    for para in doc.paragraphs:
-        if tag in para.text:
-            for run in para.runs:
-                if tag in run.text:
-                    run.text = run.text.replace(tag, value)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if tag in cell.text:
-                    for para in cell.paragraphs:
-                        for run in para.runs:
-                            if tag in run.text:
-                                run.text = run.text.replace(tag, value)
-
-
 def _default_section_content(heading: str, draft: dict[str, Any]) -> str:
     """Fallback content for a template heading that has no placeholder or section narrative.
 

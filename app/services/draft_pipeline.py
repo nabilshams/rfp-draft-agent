@@ -17,6 +17,7 @@ from app.outputs.docx_writer import generate_docx, parse_template_sections
 from app.outputs.xlsx_writer import generate_xlsx
 from app.schemas import DraftRequest
 from app.services.drafts import publish_outputs
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
@@ -59,28 +60,52 @@ def stream_draft(
     user: UserClaims,
     allow_web_search: bool,
     guidance: str = "",
+    job_id: str = "",
 ) -> Iterator[dict[str, Any]]:
     """``start``, the approach's events, then ``complete`` once the documents are stored.
 
-    Raises if generation or storing the documents fails (after the events produced so far).
+    Raises if generation or storing the documents fails (after the events produced so far). The whole draft is one
+    trace (a ``draft`` span carrying *job_id*, totals of tokens and estimated cost) so each requirement's stages can be
+    followed from the job.
     """
-    yield {"type": "start", "total": len(requirements), "approach": req.approach}
-
+    draft = spans.DraftTrace(
+        "draft",
+        spans.meter_from_settings(settings),
+        job__id=job_id,
+        rfp__id=req.rfp_id,
+        approach=req.approach,
+        requirements__total=len(requirements),
+        web_search=allow_web_search,
+    )
+    outcome = "cancelled"  # what a draft that is closed before it finishes (cancelled, client gone) ends as
     responses: list[dict[str, Any]] = []
-    narratives: list[dict[str, Any]] = []
-    for event in draft_events(req, requirements, user, allow_web_search, guidance):
-        if event["type"] == "response":
-            logger.info("[RFP-TRACE] response requirement_id=%s", event["data"].get("requirement_id"))
-            responses.append(event["data"])
-        elif event["type"] == "section_narrative":
-            narratives.append(event["data"])
-        yield event
+    try:
+        yield {"type": "start", "total": len(requirements), "approach": req.approach}
 
-    if req.approach in ("map_reduce", "per_section"):
-        executive, overview = sections.summaries_from_sections(narratives, "See section narratives.")
-    else:
-        executive, overview = "See individual requirement responses.", "Responses generated per requirement."
-    draft_result = {"executive_summary": executive, "solution_overview": overview, "responses": responses}
-    outputs = publish_outputs(settings, req.rfp_id, generate_docx(draft_result), generate_xlsx(responses, requirements))
-    metrics.bump("drafts")
-    yield {"type": "complete", "outputs": outputs}
+        narratives: list[dict[str, Any]] = []
+        for event in draft.iterate(draft_events(req, requirements, user, allow_web_search, guidance)):
+            if event["type"] == "response":
+                logger.info("[RFP-TRACE] response requirement_id=%s", event["data"].get("requirement_id"))
+                responses.append(event["data"])
+            elif event["type"] == "section_narrative":
+                narratives.append(event["data"])
+            yield event
+
+        with draft.step(), spans.stage("outputs") as outputs_span:
+            if req.approach in ("map_reduce", "per_section"):
+                executive, overview = sections.summaries_from_sections(narratives, "See section narratives.")
+            else:
+                executive, overview = "See individual requirement responses.", "Responses generated per requirement."
+            draft_result = {"executive_summary": executive, "solution_overview": overview, "responses": responses}
+            docx_bytes, xlsx_bytes = generate_docx(draft_result), generate_xlsx(responses, requirements)
+            outputs_span.set(outputs__bytes=len(docx_bytes) + len(xlsx_bytes))
+            outputs = publish_outputs(settings, req.rfp_id, docx_bytes, xlsx_bytes)
+        metrics.bump("drafts")
+        outcome = "ok"
+        yield {"type": "complete", "outputs": outputs}
+    except Exception as exc:
+        outcome = "error"
+        draft.stage.set(error__type=type(exc).__name__)
+        raise
+    finally:
+        draft.finish(outcome, requirements__done=len(responses))

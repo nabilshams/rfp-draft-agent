@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # ── Azure AI Foundry ──────────────────────────────────
     foundry_project_endpoint: str = Field(..., alias="FOUNDRY_PROJECT_ENDPOINT")
     foundry_model_deployment_name: str = Field("gpt-4o", alias="FOUNDRY_MODEL_DEPLOYMENT_NAME")
+    # List prices in USD per million tokens, used only to estimate the cost shown in telemetry and reports.
+    # Set them to your model's and region's price; they are not read from Azure.
+    model_input_price_per_million: float = Field(2.5, alias="MODEL_INPUT_PRICE_PER_MILLION", ge=0)
+    model_output_price_per_million: float = Field(10.0, alias="MODEL_OUTPUT_PRICE_PER_MILLION", ge=0)
     foundry_project_name: str = Field("", alias="FOUNDRY_PROJECT_NAME")
 
     # ── Azure AI Search ───────────────────────────────────

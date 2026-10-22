@@ -23,6 +23,7 @@ from app.outputs.xlsx_writer import generate_xlsx
 from app.schemas import AnswerRequest, DraftRequest, GenerateDocRequest, GenerateSectionRequest
 from app.services.draft_pipeline import stream_draft
 from app.services.drafts import load_rfp, prepare_draft, publish_outputs, web_search_choice
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["agent"])
@@ -43,18 +44,26 @@ def draft(
     requirements = inputs.requirements
 
     start = time.time()
-    draft_result = answers.run_draft(
-        rfp_id=req.rfp_id,
-        requirements_json=json.dumps(requirements, indent=2),
-        client_id=req.client_id,
-        project_id=req.project_id,
-        solution_area=req.solution_area,
-        tone=req.tone,
-        user_oid=user.oid,
-        user_groups=user.groups,
-        allow_web_search=allow_web_search,
-        guidance=inputs.guidance,
-    )
+    with spans.draft_scope(
+        "draft",
+        settings,
+        rfp__id=req.rfp_id,
+        approach="single_run",
+        requirements__total=len(requirements),
+        web_search=allow_web_search,
+    ):
+        draft_result = answers.run_draft(
+            rfp_id=req.rfp_id,
+            requirements_json=json.dumps(requirements, indent=2),
+            client_id=req.client_id,
+            project_id=req.project_id,
+            solution_area=req.solution_area,
+            tone=req.tone,
+            user_oid=user.oid,
+            user_groups=user.groups,
+            allow_web_search=allow_web_search,
+            guidance=inputs.guidance,
+        )
     elapsed = time.time() - start
     logger.info("Draft generation took %.1fs for RFP %s", elapsed, req.rfp_id)
 

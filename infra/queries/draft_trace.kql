@@ -1,0 +1,30 @@
+// Every stage of one draft, in order, with duration, model, tokens and outcome. Set `job` to a job id (from the
+// "draft" row of draft_cost.kql or the job's own URL). Add `| where requirement == "R3"` to follow one requirement.
+let job = "REPLACE-WITH-JOB-ID";
+let trace = toscalar(
+    AppDependencies
+    | where TimeGenerated > ago(30d) and Name == "draft" and tostring(Properties["job.id"]) == job
+    | project OperationId
+    | take 1);
+let requirementOf = AppDependencies
+    | where OperationId == trace and Name == "requirement"
+    | project requirementSpan = Id, requirement = tostring(Properties["requirement.id"]);
+AppDependencies
+| where OperationId == trace and Name in ("draft", "requirement", "kb.search", "llm.run", "section.classify", "section.narrative", "outputs")
+| join kind=leftouter requirementOf on $left.ParentId == $right.requirementSpan
+| extend p = Properties
+| project
+    start = TimeGenerated,
+    stage = Name,
+    requirement = coalesce(requirement, tostring(p["requirement.id"])),
+    ms = DurationMs,
+    outcome = tostring(p["outcome"]),
+    model = tostring(p["llm.model"]),
+    status = tostring(p["llm.status"]),
+    input_tokens = tolong(p["llm.input_tokens"]),
+    output_tokens = tolong(p["llm.output_tokens"]),
+    cost_usd = todouble(p["llm.cost_usd"]),
+    kb_results = toint(p["kb.results"]),
+    kb_mode = tostring(p["kb.mode"]),
+    figures_removed = toint(p["figures.removed"])
+| order by start asc

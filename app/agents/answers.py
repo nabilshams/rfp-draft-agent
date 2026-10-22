@@ -10,6 +10,7 @@ from app.agents import grounding, kb_search, lifecycle, runner
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
 from app.agents.untrusted import fence, guidance_block
+from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,30 @@ def run_draft(
     return draft
 
 
-def answer_single_requirement(
+def answer_single_requirement(**kwargs: Any) -> dict[str, Any]:
+    """Process a single requirement through the agent and return structured response.
+
+    Recorded as a ``requirement`` span with the stages beneath it: retrieval (when ``context`` is given as a function,
+    so that it runs inside the span), the model call and the figure check. Other arguments are those of
+    :func:`_answer_single_requirement`.
+    """
+    requirement = kwargs["requirement"]
+    with spans.stage("requirement", requirement__id=str(requirement.get("id", "?"))[:64]) as span:
+        context = kwargs["context"]
+        if callable(context):
+            context = context()
+        span.set(context__docs=len(context.docs))
+        answer = _answer_single_requirement(**{**kwargs, "context": context})
+        span.set(
+            evidence=len(answer.get("evidence") or []),
+            citations=len(kb_search.cited_urls(answer)),
+            answer__chars=len(str(answer.get("answer_markdown", ""))),
+            outcome="ok",
+        )
+        return answer
+
+
+def _answer_single_requirement(
     *,
     requirement: dict[str, Any],
     context: RetrievedContext,
@@ -159,7 +183,7 @@ def answer_single_requirement(
     allow_web_search: bool = False,
     guidance: str = "",
 ) -> dict[str, Any]:
-    """Process a single requirement through the agent and return structured response."""
+    """The work of :func:`answer_single_requirement`."""
     req_id = requirement.get("id", "?")
     req_text = requirement.get("text", "")
 
