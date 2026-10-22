@@ -80,7 +80,7 @@ class FakeCosmosContainer:
         if "c.owner = @owner" in query:
             rows = [d for d in rows if d["owner"] == params["@owner"] or set(d.get("groups", [])) & set(params["@groups"])]
         if "ORDER BY" in query:
-            field = query.split("ORDER BY c.")[1].split()[0]
+            field = query.split('ORDER BY c["')[1].split('"]')[0]  # the bracket form is required for reserved words
             rows.sort(key=lambda d: d[field], reverse="DESC" in query.split("ORDER BY")[1])
         if "OFFSET" in query:
             rows = rows[params["@offset"] :][: params["@limit"]]
@@ -246,7 +246,7 @@ class TestCosmosSpecifics:
         store.list_projects(owner="a", groups=[], everything=True)
         sql, params = container.queries[0]
         assert "c.projectId = @project" in sql and params["@project"] == "p1"
-        assert "ORDER BY c.order ASC" in sql
+        assert 'ORDER BY c["order"] ASC' in sql  # `order` is a reserved word in Cosmos SQL: found by the live smoke check
 
     def test_user_input_is_always_a_parameter_never_part_of_the_sql(self):
         container = FakeCosmosContainer()
