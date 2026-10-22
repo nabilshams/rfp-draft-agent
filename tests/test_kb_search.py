@@ -126,6 +126,7 @@ class TestSearchKb:
             "approval_status": "",
             "section": "",
             "page": None,
+            "blob_name": "",  # not a knowledge-base blob URL, so no reference link
             "weight": 0.85,
             "rank_score": 2.125,
         }

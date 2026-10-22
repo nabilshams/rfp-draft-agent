@@ -289,9 +289,11 @@ function renderSingleResponse(resp) {
   const meets = meetsLabel(resp.meets);
   const evidence = (resp.evidence || []).map(e => {
     const url = safeUrl(e.source_url);
+    // A knowledge-base reference link opens the document in the app; for a PDF, at the page the evidence is on
+    const target = url && e.page && new URL(url).pathname.startsWith('/kb/doc/') ? url + '#page=' + Number(e.page) : url;
     const title = esc(e.title || (url ? 'Source' : ''));
     const link = url
-      ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary)">' + title + '</a>'
+      ? '<a href="' + esc(target) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary)">' + title + '</a>'
       : title;
     const quote = e.quote ? ' &mdash; <em>"' + esc(String(e.quote).substring(0, 150)) + '"</em>' : '';
     const tag = e.source_type

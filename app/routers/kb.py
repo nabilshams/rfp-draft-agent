@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
+from urllib.parse import quote
 
 from azure.core.exceptions import ResourceNotFoundError
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Response, UploadFile
 
-from app import azure_clients
+from app import azure_clients, kb_refs
 from app.auth.access import (
     KbAcl,
     can_manage,
@@ -38,6 +39,8 @@ from app.validation import KbBlobName, Segment
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
+
+_DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 @router.post("/upload", dependencies=[Depends(rate_limited)])
@@ -195,6 +198,43 @@ def kb_list(
         )
 
     return {"documents": docs, "count": len(docs)}
+
+
+@router.get("/doc/{ref}", dependencies=[Depends(rate_limited)])
+def kb_document(
+    ref: Annotated[str, Path(pattern=kb_refs.REF_PATTERN)],
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """Open a knowledge-base document from an evidence link (``/kb/doc/<ref>``).
+
+    The link is the opaque reference retrieval gives the model and the user. You get the document only if you
+    could see it in the knowledge base (you own it, it is shared with one of your groups, or you are an
+    administrator); a reference that doesn't exist and a document you can't see both give 404.
+    """
+    container = azure_clients.container(settings, settings.storage_kb_container)
+    blob_name = kb_refs.refs.resolve(ref, lambda: (b.name for b in container.list_blobs()))
+    if blob_name is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    load_kb_document(container, blob_name, user, settings)
+
+    try:
+        data = container.download_blob(blob_name).readall()
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    logger.info("User %s opened KB document ref %s", user.oid, ref)
+
+    filename = blob_name.rsplit("/", 1)[-1]
+    is_pdf = filename.lower().endswith(".pdf")
+    return Response(
+        content=data,
+        media_type="application/pdf" if is_pdf else _DOCX_TYPE,
+        headers={
+            # A PDF opens in the browser's viewer; Word documents download
+            "Content-Disposition": f"{'inline' if is_pdf else 'attachment'}; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.delete("/delete")

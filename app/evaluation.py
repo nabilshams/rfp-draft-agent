@@ -82,7 +82,11 @@ def load_cases(path: str | Path) -> list[EvalCase]:
 
 def _matches(doc: dict[str, Any], expected: str) -> bool:
     needle = expected.lower()
-    return needle in str(doc.get("title", "")).lower() or needle in str(doc.get("source_url", "")).lower()
+    return (
+        needle in str(doc.get("title", "")).lower()
+        or needle in str(doc.get("source_url", "")).lower()
+        or needle in str(doc.get("blob_name", "")).lower()
+    )
 
 
 def evaluate(cases: list[EvalCase], search: Callable[[EvalCase], list[dict[str, Any]]], k: int = 5) -> EvalReport:

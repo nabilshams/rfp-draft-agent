@@ -318,6 +318,15 @@ curl -X POST http://localhost:8000/kb/ingest \
   -d '{ "blob_name": "acme/proj-42/cloud/solution_guide.pdf" }'
 ```
 
+### `GET /kb/doc/{ref}`
+Opens a knowledge-base document from an evidence link. Retrieval never gives the model (or the user) a blob URL:
+those contain the customer/project folder names and do not open (the storage account is private). A source is
+shown as `/kb/doc/<ref>`, where `<ref>` is a 24-character hash of the blob name. The app resolves it, checks that you
+could see the document in the knowledge base (owner, a shared group, or administrator) and returns it: PDFs
+open in the browser (the UI adds `#page=N` when the evidence has a page), Word files download. A reference that
+doesn't exist and a document you can't see both return `404`. Links in the downloaded Word and Excel outputs are
+the same relative paths, so they work from a signed-in browser on the app's address.
+
 ### `GET /kb/list`, `DELETE /kb/delete?blob_name=…`, `POST /kb/reindex`
 `list` returns only documents you own or that are shared with one of your groups. `delete` is for the owner or
 an admin (a document you can't see returns 404; one you can see but don't own returns 403). `reindex`
@@ -575,6 +584,14 @@ model to prefer the more authoritative and recent source and to record any disag
 entries in a response carry the same fields (`source_type`, `effective_date`, `version`, `section`, `page`), and
 the UI, the Word document and the compliance matrix show them.
 
+**Evidence links are references, not blob URLs.** Knowledge-base sources reach the prompt, the answer and the
+evidence as `/kb/doc/<ref>` (see [`GET /kb/doc/{ref}`](#get-kbdocref)), so a customer's folder name never appears
+in what the model sees and every link goes through sign-in and the document's access check. The model may cite
+only the references it was given; a link to anything else (including a raw blob URL) is removed. Customer
+identity stays where access control uses it (the blob path and the index's `client_id` and `oids`/`groups`
+fields), not in the text of the prompt. A file's name is still shown as the source title (and is redacted like
+any other text), so name files without customer names if that matters to you.
+
 **Adding provenance to existing documents.** The index gains the new fields automatically when the app starts
 (an additive change; no downtime). Chunks indexed earlier have no values until the document is re-indexed:
 an administrator runs `POST /kb/reindex` (or "Re-index All" in the UI). Documents that never had provenance are
@@ -744,6 +761,7 @@ rfp-draft-agent/
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   ├── retrieval.py           # DLAC + segmentation query builder
 │   │   └── untrusted.py           # Fences that mark third-party text in prompts
+│   ├── kb_refs.py                 # Opaque /kb/doc/<ref> links for knowledge-base documents
 │   ├── evaluation.py              # Retrieval metrics (hit rate, recall@k, MRR)
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
