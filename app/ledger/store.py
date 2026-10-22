@@ -226,7 +226,8 @@ class CosmosStore:
             sql += " AND c.rid = @rid"
             parameters.append({"name": "@rid", "value": rid})
         if order_by:
-            sql += f" ORDER BY c.{order_by} {'DESC' if descending else 'ASC'}"
+            # Bracket form: some field names (``order``) are reserved words in Cosmos DB SQL
+            sql += f' ORDER BY c["{order_by}"] {"DESC" if descending else "ASC"}'
         if limit is not None or offset:
             sql += " OFFSET @offset LIMIT @limit"
             parameters += [
