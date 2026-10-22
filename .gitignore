@@ -17,3 +17,6 @@ htmlcov/
 .vscode/
 # azd environment state (contains subscription/tenant IDs)
 .azure/
+
+# Evaluation reports are generated; the committed baseline is evals/baseline.{json,md}
+evals/reports/

@@ -607,6 +607,32 @@ lists the removed figures under its risks. This catches invented numbers only; w
 true still needs a person (or the verifier planned in #35). With web search on, figures in the model's own output
 are trusted, because the pages it read can't be seen.
 
+**Evaluating quality.** `python scripts/eval_pipeline.py` scores the pipeline against a small *golden set*
+(`evals/golden/`): three fictional RFPs (Word with a requirements table, a spreadsheet, a PDF), a fixture knowledge
+base that includes a current authoritative policy and a stale conflicting proposal, and labelled requirements,
+some of which the knowledge base cannot answer (bait for invented claims). Extraction, retrieval and its ranking,
+the prompts, citation checks and the removal of invented figures are the real code; only the model is replayed from
+recorded answers, so the command needs no Azure access and gives the same result every time. It reports extraction
+recall and precision, retrieval hit rate and MRR, citation support (is the quote really in the cited document),
+unsupported figures (written by the model, and delivered after the app removes them), abstention correctness
+(declines when it should, answers when it can), answer and compliance correctness, and, from the live recording,
+latency and tokens per requirement (`--input-price`/`--output-price` add a cost estimate). The report is written to
+`evals/reports/` (JSON and Markdown); the committed baseline is [`evals/baseline.md`](evals/baseline.md).
+
+- `python scripts/eval_pipeline.py --check` exits 1 if any metric is worse than `evals/baseline.json` by more than
+  its tolerance (2 points). The test suite runs the same check (`tests/test_eval_harness.py`), so CI fails on a
+  regression in extraction, retrieval, prompts' post-processing or scoring.
+- `--mode live --record` calls the real model (billable; about 25 calls) and saves its answers under
+  `evals/golden/recordings/<variant>/`. Do this when the prompts or the model change on purpose, then
+  `--write-baseline` to accept the new numbers. `--mode live --degrade --record` adds a deliberately bad
+  instruction; the recorded `degraded` variant is kept to show that the metrics notice (citation support,
+  unsupported figures, abstention, false answers and answer correctness all get worse).
+- The baseline is honest: the model still answers some requirements it has no evidence for (60% of the
+  unsupported ones), which is the gap the claim verifier planned in #35 is meant to close. It also shows a known
+  extraction false positive ("Each answer shall be no longer than 200 words" is read as a requirement).
+- Add cases by adding a JSON file under `evals/golden/rfps/` (and documents to `kb.json`), then record. Keep the
+  fixtures fictional: a test fails if they contain contact details, URLs or anything the redaction rules flag.
+
 **Measuring retrieval quality.** `python scripts/eval_retrieval.py evals/retrieval_cases.example.jsonl
 --client-id <id> --project-id <id> --oid <object id>` runs your own cases (a query plus the documents that
 should come back) in keyword, hybrid and semantic mode and prints hit rate, recall@k and MRR. Searches run with
@@ -763,6 +789,7 @@ rfp-draft-agent/
 │   │   └── untrusted.py           # Fences that mark third-party text in prompts
 │   ├── kb_refs.py                 # Opaque /kb/doc/<ref> links for knowledge-base documents
 │   ├── evaluation.py              # Retrieval metrics (hit rate, recall@k, MRR)
+│   ├── evalkit/                   # Golden-set evaluation: fixtures, scoring, replay/live runs, reports
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
 │   │   ├── kb_ingest.py           # Blob → chunk (section, page) → embed → index
@@ -790,6 +817,7 @@ rfp-draft-agent/
 │   ├── setup_auth.py              # Create the Entra app registration for Easy Auth (azd)
 │   ├── check_exposure.py          # azd post-provision hook: warns about open, unauthenticated deployments
 │   ├── eval_retrieval.py          # Compare keyword / hybrid / semantic retrieval on your KB
+│   ├── eval_pipeline.py           # Score the whole pipeline on the golden set (replay or live)
 │   ├── list_connections.py        # List Foundry project connections (find the BING_CONNECTION_ID)
 │   └── demo.py                    # End-to-end demo script
 ├── evals/

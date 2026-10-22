@@ -1,0 +1,37 @@
+{
+  "id": "clinic-pdf",
+  "filename": "lakeside_health_rfp.pdf",
+  "format": "pdf",
+  "_note": "Fictional RFP. Lakeside Health Network does not exist.",
+  "pages": [
+    [
+      "1. Overview",
+      "Lakeside Health Network is replacing its patient feedback portal.",
+      "2. Mandatory Requirements",
+      "The vendor shall support single sign-on using SAML 2.0.",
+      "The provider must enforce multi-factor authentication for administrators."
+    ],
+    [
+      "3. Data Handling",
+      "The vendor shall retain backups for at least 35 days.",
+      "The vendor must keep all patient data in Australia.",
+      "The vendor shall provide a SOC 2 Type II report.",
+      "The vendor must be certified under HITRUST.",
+      "4. Response Format",
+      "Page limit is 20 pages."
+    ]
+  ],
+  "requirements": [
+    {"id": "C1", "text": "The vendor shall support single sign-on using SAML 2.0.", "supported": true,
+     "expected_sources": ["identity-and-access"], "contains_any": [["SAML"]]},
+    {"id": "C2", "text": "The provider must enforce multi-factor authentication for administrators.", "supported": true,
+     "expected_sources": ["identity-and-access"], "contains_any": [["multi-factor"]]},
+    {"id": "C3", "text": "The vendor shall retain backups for at least 35 days.", "supported": true,
+     "expected_sources": ["security-policy-2026"], "contains_any": [["35 days"]]},
+    {"id": "C4", "text": "The vendor must keep all patient data in Australia.", "supported": true,
+     "expected_sources": ["security-policy-2026"], "contains_any": [["Australia"]]},
+    {"id": "C5", "text": "The vendor shall provide a SOC 2 Type II report.", "supported": true,
+     "expected_sources": ["security-policy-2026"], "contains_any": [["SOC 2"]]},
+    {"id": "C6", "text": "The vendor must be certified under HITRUST.", "supported": false}
+  ]
+}
