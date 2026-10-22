@@ -286,6 +286,22 @@ answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
 | `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
 | `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
 | `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
+| `POST /projects/{id}/draft` | Draft the project in the background (202). Body: `client_id`, `kb_project_id` (the knowledge-base project segment to search), optional `solution_area`, `tone`, `approach`, `context`, `allow_web_search`, and `rids` to redo specific requirements |
+| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, and `remaining` (requirements still without an answer) |
+| `POST /projects/{id}/draft/cancel` | Ask the running draft to stop (whoever started it, the project owner or an admin). Answers already saved are kept |
+
+**Drafting a project.** Each answer is written to the ledger as a new answer version the moment the model produces it
+(source `model`, with the job id), so reloading the project shows answers appearing, and nothing is lost if the draft
+is cancelled, fails, or the server restarts. Starting a draft again **picks up where it left off**: by default only
+requirements without an answer are drafted, so finished work is never regenerated (an interrupted draft is reported
+as `interrupted` by the status endpoint). An answer a person wrote or approved is not replaced unless that requirement
+is named in `rids` (then the model's answer becomes a new version and the approval is withdrawn). If somebody edits a
+requirement while the draft is running, the model's later answer for it is **not** saved over their edit. A
+requirement whose generation failed gets no answer at all (no invented "No"), so the next run tries it again. Only one
+draft runs per project at a time (409). The Word and Excel documents are built from **everything the project holds**,
+not just this run's answers, and are published under the project id (see
+[`GET /outputs`](#get-outputsrfp_idfilename)). Section approaches (`per_section`, `map_reduce`) save the per-requirement
+answers; their section narratives stay in the job's events for now.
 
 Rules: anyone who can open a project can read it and edit its requirements and answers; only the owner (or an
 administrator) can rename, share or delete it. A project nobody shared with you is a `404`, not a `403`. Every edit is
@@ -359,7 +375,8 @@ an admin (a document you can't see returns 404; one you can see but don't own re
 (admins only) re-indexes every document with the access recorded on it and skips documents that have no owner.
 
 ### `GET /outputs/{rfp_id}/{filename}`
-Download a generated output file (`draft.docx` or `compliance.xlsx`) of an RFP you own.
+Download a generated output file (`draft.docx` or `compliance.xlsx`) of an RFP you own, or of a **project** you can open
+(a project's documents are published under its id, so group members who were never given the RFP can download them).
 
 ```bash
 curl -O http://localhost:8000/outputs/abc123/draft.docx
@@ -606,7 +623,9 @@ process; at most `JOB_MAX_ACTIVE_PER_USER` unfinished jobs per user, else `429`)
   answer a poll. The record holds the status, progress and every event, the same events `/draft/stream` sends.
 - **A restart loses the work in flight.** The worker records a heartbeat every `JOB_HEARTBEAT_SECONDS`; a job that
   is still `queued`/`running` with no heartbeat for `JOB_STALE_SECONDS` is reported as `failed` ("interrupted")
-  when someone asks for it, and the user starts it again. Nothing is resumed.
+  when someone asks for it, and the user starts it again. A plain `/drafts` job resumes nothing; a **project** draft
+  (`POST /projects/{id}/draft`) already has every finished answer in the ledger, so starting it again only does what
+  is left.
 - **Cancel** with `POST /drafts/{job_id}/cancel`; the worker stops between steps (a step is one agent call, so it
   can take a moment).
 - **Access** is the owner or an administrator; anyone else gets `404`.
@@ -834,7 +853,7 @@ rfp-draft-agent/
 │   ├── logging_setup.py           # Console logging + live log stream
 │   ├── metrics.py                 # Request counters for /metrics
 │   ├── routers/                   # One module per area: ops, rfp, draft, jobs, projects, kb, outputs, template
-│   ├── ledger/                    # Project ledger: store (Cosmos DB / memory), service, schemas, smoke check
+│   ├── ledger/                    # Project ledger: store (Cosmos DB / memory), service, drafting, schemas, smoke check
 │   ├── services/                  # Shared steps: RFP loading/publishing, draft pipeline, background jobs, KB access, uploads
 │   ├── static/                    # Web UI: index.html, app.css, app.js, safe.js (escaping helpers)
 │   ├── auth/

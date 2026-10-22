@@ -7,7 +7,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.ingestion.pipeline import RedactedRecords, RedactedText
-from app.validation import Filename, RfpId
+from app.schemas import DraftRequest
+from app.validation import Filename, RfpId, Segment, Tone
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Short = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
@@ -59,6 +60,35 @@ class RequirementUpdate(BaseModel):
         if "assignee" in data and not data["assignee"]:
             data["assignee_name"] = ""  # clearing the assignee clears the name too
         return {k: v for k, v in data.items() if v is not None}
+
+
+class ProjectDraft(BaseModel):
+    """Draft the project's requirements. By default only those without an answer; name some in ``rids`` to redo them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: Segment
+    kb_project_id: Segment = Field(description="The knowledge-base project segment to search (not the ledger project).")
+    solution_area: Segment | None = None
+    tone: Tone = "professional"
+    approach: Literal["per_requirement", "per_section", "map_reduce"] = "per_requirement"
+    context: RedactedText = ""
+    allow_web_search: bool = False
+    rids: list[Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]] | None = Field(
+        default=None, max_length=1000
+    )
+
+    def as_request(self, project_id: str) -> DraftRequest:
+        return DraftRequest(
+            rfp_id=project_id,  # documents are published under the project, and opened through it
+            client_id=self.client_id,
+            project_id=self.kb_project_id,
+            solution_area=self.solution_area,
+            tone=self.tone,
+            approach=self.approach,
+            context=self.context,
+            allow_web_search=self.allow_web_search,
+        )
 
 
 class AnswerCreate(BaseModel):

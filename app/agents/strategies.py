@@ -161,12 +161,17 @@ def stream_per_section(
                 allow_web_search=allow_web_search,
                 guidance=guidance,
             )
-            # Only keep compliance fields, not full narrative
+            # Only keep the answer's own fields, not the whole result
             data = {
                 "requirement_id": result.get("requirement_id", req.get("id", "?")),
                 "meets": result.get("meets", "No"),
                 "answer_markdown": result.get("answer_markdown", ""),
                 "evidence": result.get("evidence", []),
+                **{
+                    key: result[key]
+                    for key in ("assumptions", "risks", "followups", "kb_evidence_found", "generation_failed")
+                    if key in result
+                },
             }
         except Exception as exc:
             data = {
@@ -174,6 +179,7 @@ def stream_per_section(
                 "meets": "No",
                 "answer_markdown": f"Error: {exc}",
                 "evidence": [],
+                "generation_failed": True,
             }
         yield {"type": "requirement_compliance", "data": data}
 

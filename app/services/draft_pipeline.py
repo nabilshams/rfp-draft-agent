@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Protocol
 
 from app import metrics
 from app.agents import sections, strategies
@@ -53,6 +53,19 @@ def draft_events(
             yield {"type": "response", "data": resp}
 
 
+class DraftSink(Protocol):
+    """Where a draft's answers go as they are produced (a project's ledger), and what its documents are built from."""
+
+    def record(self, response: dict[str, Any]) -> dict[str, Any] | None:
+        """Save one answer. Returns an event to send to the client (``saved`` / ``not_saved``), or ``None``."""
+
+    def document_inputs(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """``(responses, requirements)`` the documents are built from: everything the project has, not just this run."""
+
+    def finish(self, outcome: str) -> None:
+        """Called once when the draft ends, however it ends."""
+
+
 def stream_draft(
     settings: Settings,
     req: DraftRequest,
@@ -61,12 +74,17 @@ def stream_draft(
     allow_web_search: bool,
     guidance: str = "",
     job_id: str = "",
+    *,
+    sink: DraftSink | None = None,
 ) -> Iterator[dict[str, Any]]:
     """``start``, the approach's events, then ``complete`` once the documents are stored.
 
     Raises if generation or storing the documents fails (after the events produced so far). The whole draft is one
     trace (a ``draft`` span carrying *job_id*, totals of tokens and estimated cost) so each requirement's stages can be
     followed from the job.
+
+    With a *sink*, every answer is saved the moment it is produced (before it is sent on, so a cancelled draft keeps
+    the answer it had just paid for), and the documents are built from everything the sink holds.
     """
     draft = spans.DraftTrace(
         "draft",
@@ -84,20 +102,31 @@ def stream_draft(
 
         narratives: list[dict[str, Any]] = []
         for event in draft.iterate(draft_events(req, requirements, user, allow_web_search, guidance)):
+            follow_up = None
             if event["type"] == "response":
                 logger.info("[RFP-TRACE] response requirement_id=%s", event["data"].get("requirement_id"))
                 responses.append(event["data"])
+                if sink is not None:
+                    follow_up = sink.record(event["data"])
             elif event["type"] == "section_narrative":
                 narratives.append(event["data"])
             yield event
+            if follow_up:
+                yield follow_up
 
         with draft.step(), spans.stage("outputs") as outputs_span:
             if req.approach in ("map_reduce", "per_section"):
                 executive, overview = sections.summaries_from_sections(narratives, "See section narratives.")
             else:
                 executive, overview = "See individual requirement responses.", "Responses generated per requirement."
-            draft_result = {"executive_summary": executive, "solution_overview": overview, "responses": responses}
-            docx_bytes, xlsx_bytes = generate_docx(draft_result), generate_xlsx(responses, requirements)
+            document_responses, document_requirements = sink.document_inputs() if sink else (responses, requirements)
+            draft_result = {
+                "executive_summary": executive,
+                "solution_overview": overview,
+                "responses": document_responses,
+            }
+            docx_bytes = generate_docx(draft_result)
+            xlsx_bytes = generate_xlsx(document_responses, document_requirements)
             outputs_span.set(outputs__bytes=len(docx_bytes) + len(xlsx_bytes))
             outputs = publish_outputs(settings, req.rfp_id, docx_bytes, xlsx_bytes)
         metrics.bump("drafts")
@@ -109,3 +138,8 @@ def stream_draft(
         raise
     finally:
         draft.finish(outcome, requirements__done=len(responses))
+        if sink is not None:
+            try:
+                sink.finish(outcome)
+            except Exception:
+                logger.exception("Could not finish the project draft %s", job_id)

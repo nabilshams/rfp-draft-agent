@@ -118,7 +118,7 @@ def _conflict() -> HTTPException:
 # ── Events ───────────────────────────────────────────────
 
 
-def _event(project_id: str, actor: Actor, action: str, rid: str | None = None, **details: Any) -> Doc:
+def new_event(project_id: str, actor: Actor, action: str, rid: str | None = None, **details: Any) -> Doc:
     at = _now()
     event: Doc = {
         "id": f"evt:{at}:{uuid.uuid4().hex[:8]}",
@@ -223,7 +223,7 @@ def create_project(
         "created_at": now,
         "updated_at": now,
     }
-    event = _event(project_id, actor, "project.created", requirements=len(docs), rfp_id=rfp_id or "")
+    event = new_event(project_id, actor, "project.created", requirements=len(docs), rfp_id=rfp_id or "")
     first = [ledger_store.create(project), ledger_store.create(event)] + [
         ledger_store.create(d) for d in docs[: ledger_store.MAX_BATCH - 2]
     ]
@@ -307,7 +307,7 @@ def update_project(
     try:
         store.apply(
             project_id,
-            [ledger_store.replace(project), ledger_store.create(_event(project_id, Actor.of(user), "project.updated", **changes))],
+            [ledger_store.replace(project), ledger_store.create(new_event(project_id, Actor.of(user), "project.updated", **changes))],
         )
     except Conflict:
         raise _conflict() from None
@@ -374,7 +374,7 @@ def update_requirement(
             project_id,
             [
                 ledger_store.replace(requirement),
-                ledger_store.create(_event(project_id, actor, "requirement.updated", rid, changes=recorded)),
+                ledger_store.create(new_event(project_id, actor, "requirement.updated", rid, changes=recorded)),
             ],
         )
     except Conflict:
@@ -383,6 +383,28 @@ def update_requirement(
 
 
 # ── Answers ──────────────────────────────────────────────
+
+
+_EVIDENCE_KEYS = ("title", "source_url", "quote", "source_type", "authority", "effective_date", "version",
+                  "approval_status", "section")
+MAX_EVIDENCE = 20
+
+
+def _evidence(value: Any) -> list[dict[str, Any]]:
+    """An answer's evidence as the ledger keeps it: the citation plus where it came from (source type, date,
+    version, section, page), so a reader can weigh it without going back to the knowledge base."""
+    if not isinstance(value, list):
+        return []
+    kept: list[dict[str, Any]] = []
+    for entry in value[:MAX_EVIDENCE]:
+        if not isinstance(entry, dict):
+            continue
+        item: dict[str, Any] = {k: str(entry.get(k) or "")[:2000] for k in _EVIDENCE_KEYS[:3]}
+        item.update({k: str(entry[k])[:200] for k in _EVIDENCE_KEYS[3:] if entry.get(k) not in (None, "")})
+        if isinstance(entry.get("page"), int) and not isinstance(entry.get("page"), bool):
+            item["page"] = entry["page"]
+        kept.append(item)
+    return kept
 
 
 def add_answer(
@@ -417,7 +439,7 @@ def add_answer(
         "version": version,
         "answer_markdown": answer["answer_markdown"],
         "meets": answer.get("meets", ""),
-        "evidence": answer["evidence"],
+        "evidence": _evidence(content.get("evidence")),
         "assumptions": answer["assumptions"],
         "risks": answer["risks"],
         "followups": answer["followups"],
@@ -439,7 +461,7 @@ def add_answer(
         updated_at=now,
         updated_by=actor.oid,
     )
-    event = _event(
+    event = new_event(
         project_id, actor, "answer.added", rid, version=version, source=source,
         **({"restored_from": restored_from} if restored_from is not None else {}),
         **({"job_id": job_id} if job_id else {}),

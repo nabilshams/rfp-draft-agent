@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from app.auth.entra import UserClaims
 from app.config import get_settings
-from app.ledger import service
+from app.ledger import drafting, service
 from app.ledger.store import store_for
 
 
@@ -70,6 +70,21 @@ def main() -> int:
 
         events = service.list_events(store, project_id, user, settings, limit=3)
         check("returns the audit trail newest first, paged", len(events) == 3 and events[0]["action"] == "answer.added")
+
+        # The path a background draft uses: pick the unanswered requirements, save each answer as it arrives
+        selection = drafting.select(store, project_id, None)
+        check("selects only the requirements without an answer", len(selection.requirements) == 129 and "R1" not in selection.revs)
+        sink = drafting.ProjectSink(store, settings, project_id, "smoke-job", selection)
+        saved = sink.record({"requirement_id": "R2", "answer_markdown": "Drafted.", "meets": "Yes", "evidence": [{"title": "t", "source_url": "/kb/doc/x", "quote": "q", "page": 3}]})
+        check("saves a model answer as it arrives", saved["type"] == "saved" and saved["data"]["version"] == 1)
+        service.update_requirement(store, settings, user, project_id, "R3", {"category": "edited-by-a-person"})
+        refused = sink.record({"requirement_id": "R3", "answer_markdown": "Too late."})
+        check("does not overwrite a requirement a person changed meanwhile", refused["data"]["reason"] == "changed")
+        failed = sink.record({"requirement_id": "R4", "answer_markdown": "Error", "generation_failed": True})
+        check("does not store a failed generation as an answer", failed["data"]["reason"] == "failed")
+        responses, requirements = sink.document_inputs()
+        check("builds the documents from every answer in the project", len(responses) == 2 and len(requirements) == 130)
+        check("keeps evidence details on the answer", service.get_requirement(store, project_id, "R2", user, settings)["answer"]["evidence"][0]["page"] == 3)
     finally:
         if project_id:
             removed = store.delete_project(project_id)
