@@ -12,7 +12,7 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
-from app.agents import answers, kb_search, lifecycle, sections
+from app.agents import answers, kb_search, lifecycle, sections, states
 from app.agents.kb_search import RetrievedContext
 from app.config import get_settings
 
@@ -123,15 +123,25 @@ def stream_per_section(
     yield {"type": "section_map", "data": section_map}
     logger.info("Section mapping: %s", {k: len(v) for k, v in section_map.items()})
 
-    # Step 2
+    # Step 2: requirements that are routed to people or have nothing to draft from stay out of the narratives
+    router = states.router_from_settings(settings)
+    draftable = {
+        rid
+        for rid, req in req_by_id.items()
+        if rid in index_by_id
+        and states.pre_gate(
+            req, router=router, evidence_found=contexts[index_by_id[rid]].found, web_search=allow_web_search
+        )
+        is None
+    }
     jobs = []
     for section_name, req_ids in section_map.items():
-        section_reqs = [req_by_id[rid] for rid in req_ids if rid in req_by_id]
+        section_reqs = [req_by_id[rid] for rid in req_ids if rid in draftable]
         if section_reqs:
             jobs.append(
                 {
                     "section_name": section_name,
-                    "req_ids": req_ids,
+                    "req_ids": [r.get("id", "?") for r in section_reqs],
                     "section_reqs": section_reqs,
                     "context": section_context(req_ids),
                     "tone": tone,
@@ -164,22 +174,24 @@ def stream_per_section(
             # Only keep the answer's own fields, not the whole result
             data = {
                 "requirement_id": result.get("requirement_id", req.get("id", "?")),
-                "meets": result.get("meets", "No"),
+                "meets": result.get("meets", ""),
                 "answer_markdown": result.get("answer_markdown", ""),
                 "evidence": result.get("evidence", []),
                 **{
                     key: result[key]
-                    for key in ("assumptions", "risks", "followups", "kb_evidence_found", "generation_failed")
+                    for key in (
+                        "assumptions", "risks", "followups", "kb_evidence_found", "generation_failed", "state", "missing"
+                    )
                     if key in result
                 },
             }
         except Exception as exc:
+            failure = answers.exception_answer(req, exc)
             data = {
-                "requirement_id": req.get("id", "?"),
-                "meets": "No",
-                "answer_markdown": f"Error: {exc}",
-                "evidence": [],
-                "generation_failed": True,
+                key: failure[key]
+                for key in (
+                    "requirement_id", "meets", "answer_markdown", "evidence", "risks", "generation_failed", "state"
+                )
             }
         yield {"type": "requirement_compliance", "data": data}
 
@@ -256,12 +268,15 @@ def stream_map_reduce(
     resp_by_id = {r.get("requirement_id", ""): r for r in all_responses}
     jobs = []
     for section_name, req_ids in section_map.items():
-        section_answers = [resp_by_id[rid] for rid in req_ids if rid in resp_by_id]
+        # Only answers that are answers: placeholders and failures are not woven into prose
+        section_answers = [
+            resp_by_id[rid] for rid in req_ids if rid in resp_by_id and resp_by_id[rid].get("state") in states.APPROVABLE
+        ]
         if section_answers:
             jobs.append(
                 {
                     "section_name": section_name,
-                    "req_ids": req_ids,
+                    "req_ids": [a.get("requirement_id", "?") for a in section_answers],
                     "section_answers": section_answers,
                     "tone": tone,
                     "agent_id": agent_id,

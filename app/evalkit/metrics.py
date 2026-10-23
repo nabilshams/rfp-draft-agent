@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
+from app.agents import states
 from app.agents.grounding import figures_in
 
 # Metrics where a bigger number is better, and where a smaller one is. Used for regression checks.
@@ -20,6 +21,7 @@ HIGHER_IS_BETTER = (
     "answer_correctness",
     "compliance_correctness",
     "answer_rate",
+    "state_correctness",
 )
 LOWER_IS_BETTER = ("unsupported_claim_rate_raw", "unsupported_claim_rate_final", "false_answer_rate")
 
@@ -91,6 +93,8 @@ class RequirementScore:
     abstained: bool = False
     meets: str = ""
     abstention_ok: bool | None = None
+    state: str = ""
+    state_ok: bool | None = None  # the answer state is one the requirement should end in
     answer_ok: bool | None = None  # contains_any / forbid satisfied (None when the case sets none)
     compliance_ok: bool | None = None  # meets_in satisfied (None when the case sets none)
     citations: int = 0
@@ -107,7 +111,9 @@ _ABSTAIN_PHRASES = ("not provided in sources", "recommend human review", "no rel
 
 
 def is_abstention(answer: dict[str, Any]) -> bool:
-    """Whether an answer declines to claim the capability: says so, or says No with nothing to cite."""
+    """Whether an answer declines to claim the capability: is a placeholder, says so, or says No with nothing to cite."""
+    if answer.get("state") in states.PLACEHOLDER_STATES:
+        return True
     text = squash(answer.get("answer_markdown", ""))
     if any(phrase in text for phrase in _ABSTAIN_PHRASES):
         return True
@@ -116,16 +122,7 @@ def is_abstention(answer: dict[str, Any]) -> bool:
 
 def count_citations(answer: dict[str, Any], docs: list[dict[str, Any]]) -> tuple[int, int]:
     """(evidence entries, entries whose quote really is in the retrieved document they cite)."""
-    entries = [e for e in answer.get("evidence", []) if isinstance(e, dict)]
-    supported = 0
-    for entry in entries:
-        quote = squash(entry.get("quote", ""))
-        url = str(entry.get("source_url", "")).rstrip("/")
-        if len(quote) < 10:
-            continue
-        if any(str(d.get("source_url", "")).rstrip("/") == url and quote in squash(d.get("content", "")) for d in docs):
-            supported += 1
-    return len(entries), supported
+    return states.count_supported_citations(answer, docs)
 
 
 def check_answer_text(text: str, contains_any: list[list[str]], forbid: list[str]) -> list[str]:
@@ -180,6 +177,11 @@ def score_requirement(
 
     score.answered = True
     score.meets = str(answer.get("meets", ""))
+    score.state = str(answer.get("state", ""))
+    wanted = expected.get("state_in") or (states.ANSWERED if score.supported else states.PLACEHOLDER_STATES)
+    score.state_ok = score.state in wanted
+    if not score.state_ok:
+        score.problems.append(f"answer state {score.state or 'none'!r} not in {list(wanted)}")
     score.abstained = is_abstention(answer)
     score.abstention_ok = score.abstained != score.supported
     if not score.abstention_ok:
@@ -239,6 +241,7 @@ def summarise(scores: list[RequirementScore], expected_total: int, extracted_tot
         "unsupported_claim_rate_raw": _rate(sum(1 for s in answered if s.unsupported_raw), len(answered)),
         "unsupported_claim_rate_final": _rate(sum(1 for s in answered if s.unsupported_final), len(answered)),
         "abstention_correctness": _rate(sum(1 for s in answered if s.abstention_ok), len(answered)),
+        "state_correctness": _rate(sum(1 for s in answered if s.state_ok), len(answered)),
         "false_answer_rate": _rate(sum(1 for s in unsupported if s.answered and not s.abstained), len(unsupported)),
         "answer_correctness": _rate(sum(1 for s in checked if s.answer_ok), len(checked)),
         "compliance_correctness": _rate(sum(1 for s in compliance if s.compliance_ok), len(compliance)),

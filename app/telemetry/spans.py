@@ -37,7 +37,7 @@ ALLOWED = frozenset(
     {
         # identifiers and enumerations
         "job.id", "rfp.id", "approach", "requirement.id", "section.name_hash", "outcome", "error.type", "web_search",
-        "llm.model", "llm.status", "kb.mode",
+        "llm.model", "llm.status", "kb.mode", "answer.state",
         # counts and measurements
         "requirements.total", "requirements.done", "sections", "llm.calls", "llm.input_tokens", "llm.output_tokens",
         "llm.total_tokens", "llm.cost_usd", "llm.latency_ms", "kb.results", "kb.top_k", "figures.removed",

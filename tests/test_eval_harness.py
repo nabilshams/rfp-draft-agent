@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.agents import states
 from app.evalkit import metrics, report
 from app.evalkit.golden import GOLDEN_DIR, GoldenIndex, load_cases, load_kb
 from app.evalkit.render import render_rfp
@@ -76,8 +77,9 @@ class TestRegressionGate:
         golden = tmp_path / "golden"
         shutil.copytree(GOLDEN_DIR, golden, ignore=shutil.ignore_patterns("recordings"))
         run = run_golden(mode="replay", variant="baseline", golden_dir=golden, only="clinic-pdf")
-        assert run.metrics["answer_rate"] == 0.0
-        assert all("no usable answer" in s.problems for s in run.scores)
+        # C6 (HITRUST) has nothing in the knowledge base, so the model is never asked and needs no recording
+        assert {s.id for s in run.scores if s.answered} == {"C6"}
+        assert all("no usable answer" in s.problems for s in run.scores if s.id != "C6")
 
     def test_a_stale_recording_is_reported_per_requirement(self, tmp_path):
         golden = tmp_path / "golden"
@@ -110,8 +112,17 @@ class TestBaselineFindings:
         assert scores[("council-docx", "S2")].retrieval_rank == 1  # key rotation: 90 days, not "yearly"
         assert scores[("council-docx", "S2")].answer_ok
 
-    def test_the_golden_set_has_traps_that_the_baseline_model_falls_for(self, baseline_run):
-        assert baseline_run.metrics["false_answer_rate"] > 0  # an honest baseline: there is room to improve
+    def test_no_unsupported_requirement_is_answered_with_prose(self, baseline_run):
+        # Before answer states (#33) the model prose-answered 60% of these. Now each ends as a placeholder for a person.
+        unsupported = [s for s in baseline_run.scores if not s.supported]
+        assert len(unsupported) >= 7
+        assert baseline_run.metrics["false_answer_rate"] == 0
+        assert all(s.state in states.PLACEHOLDER_STATES and s.meets == "" for s in unsupported)
+
+    def test_pricing_and_legal_requirements_are_routed_to_people_not_drafted(self, baseline_run):
+        scores = {(s.case, s.id): s for s in baseline_run.scores}
+        assert scores[("retail-xlsx", "RT-09")].state == states.NEEDS_COMMERCIAL
+        assert scores[("retail-xlsx", "RT-10")].state == states.NEEDS_LEGAL
 
 
 # ── Scoring pieces ───────────────────────────────────────
@@ -260,7 +271,11 @@ class TestGoldenFixtures:
         ids = {c.id: {r["id"] for r in c.requirements} for c in load_cases()}
         for variant in ("baseline", "degraded"):
             for case_id, requirement_ids in ids.items():
-                assert set(load_recordings(GOLDEN_DIR, variant, case_id)) == requirement_ids
+                recorded = set(load_recordings(GOLDEN_DIR, variant, case_id))
+                assert recorded <= requirement_ids
+                # Only requirements the model is never asked about (routed, or nothing in the knowledge base) lack one
+                unsupported = {r["id"] for c in load_cases() if c.id == case_id for r in c.requirements if not r["supported"]}
+                assert requirement_ids - recorded <= unsupported
 
     def test_the_fixture_index_returns_hits_shaped_like_the_search_service(self):
         index = GoldenIndex(load_kb(), "https://x/y")
@@ -278,13 +293,13 @@ class TestGoldenFixtures:
 class TestReports:
     def test_the_report_names_what_went_wrong(self, baseline_run):
         markdown = report.to_markdown(report.to_dict(baseline_run))
-        assert "Abstention correctness" in markdown and "council-docx / SV-4" in markdown
-        assert "answered an unsupported requirement" in markdown
+        assert "Abstention correctness" in markdown and "retail-xlsx / RT-08" in markdown
+        assert "contains forbidden: 99.5%" in markdown
 
     def test_the_markdown_shows_the_baseline_beside_the_value(self, baseline_run, degraded_run):
         baseline = report.to_dict(baseline_run)["metrics"]
         markdown = report.to_markdown(report.to_dict(degraded_run), baseline)
-        assert "| Citation support | 96.2% | 100.0% |" in markdown
+        assert "| Unsupported figures (model) | 8.3% | 0.0% |" in markdown
 
     def test_cost_appears_when_prices_are_given(self, baseline_run):
         assert "cost_per_requirement_usd" in report.to_dict(baseline_run, input_price=2.5, output_price=10.0)["metrics"]
@@ -306,7 +321,7 @@ class TestCommand:
         script = load_script()
         stricter = tmp_path / "baseline.json"
         stricter.write_text(
-            json.dumps({"tolerance": 0.0, "metrics": {"abstention_correctness": 0.99, "false_answer_rate": 0.0}}),
+            json.dumps({"tolerance": 0.0, "metrics": {"answer_correctness": 0.99, "false_answer_rate": 0.0}}),
             encoding="utf-8",
         )
         monkeypatch.setattr(script, "BASELINE", stricter)

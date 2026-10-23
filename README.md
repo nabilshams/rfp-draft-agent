@@ -113,7 +113,8 @@ cp .env.example .env
 | `JOB_MAX_ACTIVE_PER_USER` | Unfinished background drafts one user may have (default: `3`) |
 | `JOB_HEARTBEAT_SECONDS` / `JOB_STALE_SECONDS` | How often a running job records that it is alive (default `15`), and how long without that before it is reported as interrupted (default `120`) |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
-| `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything) |
+| `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything, so a requirement is only treated as having no evidence when the search returns nothing; the model and the citation check catch the rest) |
+| `ROUTE_COMMERCIAL_TERMS` / `ROUTE_LEGAL_TERMS` | Requirements about pricing or contract terms are never drafted: they become a placeholder for the commercial or legal team (see [Answer states](#answer-states-and-never-invent)). Terms are separated by `;`; `price*` matches any word starting with `price`, other terms match whole words and phrases, and a requirement's category and section are read too. Defaults cover price, cost, fees, discounts, payment, quotes and budgets, and liability, indemnity, warranty, governing law, IP, insurance and termination. An empty list turns routing off |
 | `SEARCH_SEMANTIC_RANKER` | Re-rank results with Azure AI Search's semantic ranker. A metered feature that needs the Basic tier or above; off by default (default: `false`) |
 | `SEARCH_MAX_CONTEXT_DOCS` | Cap on documents shared by many requirements in one prompt: full drafts and section narratives (default: `15`) |
 | `KB_TIER_WEIGHTS` | How much a source type moves a result up or down: `authoritative=1.3,approved_answer=1.15,historical=1.0,external=0.9`. The search score is multiplied by the weight; `1` changes nothing |
@@ -284,11 +285,11 @@ answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
 | `GET /projects/{id}` | The project, its requirements with their current answers, and counts by status. 404 if you can't open it |
 | `PATCH /projects/{id}` | Rename, or change who it is shared with (owner or admin) |
 | `DELETE /projects/{id}` | Delete it with all its answers and history (owner or admin) |
-| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
+| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder or has conflicting evidence cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
 | `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
 | `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
 | `POST /projects/{id}/draft` | Draft the project in the background (202). Body: `client_id`, `kb_project_id` (the knowledge-base project segment to search), optional `solution_area`, `tone`, `approach`, `context`, `allow_web_search`, and `rids` to redo specific requirements |
-| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, and `remaining` (requirements still without an answer) |
+| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person) and `failed` |
 | `POST /projects/{id}/draft/cancel` | Ask the running draft to stop (whoever started it, the project owner or an admin). Answers already saved are kept |
 
 **Drafting a project.** Each answer is written to the ledger as a new answer version the moment the model produces it
@@ -298,7 +299,7 @@ requirements without an answer are drafted, so finished work is never regenerate
 as `interrupted` by the status endpoint). An answer a person wrote or approved is not replaced unless that requirement
 is named in `rids` (then the model's answer becomes a new version and the approval is withdrawn). If somebody edits a
 requirement while the draft is running, the model's later answer for it is **not** saved over their edit. A
-requirement whose generation failed gets no answer at all (no invented "No"), so the next run tries it again. Only one
+requirement whose generation failed gets no answer at all (no invented "No") and is marked `failed`, so the next run tries it again. Only one
 draft runs per project at a time (409). The Word and Excel documents are built from **everything the project holds**,
 not just this run's answers, and are published under the project id (see
 [`GET /outputs`](#get-outputsrfp_idfilename)). Section approaches (`per_section`, `map_reduce`) save the per-requirement
@@ -696,6 +697,31 @@ an administrator runs `POST /kb/reindex` (or "Re-index All" in the UI). Document
 treated as `historical` and `unreviewed`, dated by when the file was last changed, so nothing is promoted by
 accident; change one with `POST /kb/ingest` and the provenance fields.
 
+<a id="answer-states-and-never-invent"></a>
+**Answer states: when the sources are not enough, nothing is invented.** `meets` (Yes/Partial/No) is the compliance
+claim; the *state* says how far the answer can be trusted and who has to act. Each response, and each ledger
+requirement, carries one:
+
+| State | Meaning |
+|---|---|
+| `fully_answered` / `partially_answered` | Grounded in retrieved sources, cited; a partial answer says what is missing (`missing`) |
+| `conflicting_evidence` | The sources disagree; the draft follows the more authoritative one and a person decides |
+| `no_evidence` | Nothing in the knowledge base covers it. The answer text is a placeholder, `[SME INPUT REQUIRED: <what is missing>]` |
+| `needs_sme` | An expert has to supply or confirm it: the same placeholder |
+| `needs_commercial` / `needs_legal` | Pricing and contract terms: never drafted, always `[COMMERCIAL INPUT REQUIRED: …]` / `[LEGAL INPUT REQUIRED: …]` |
+| `failed` | The draft could not be generated (an error, a timeout, an unreadable reply). Recorded as a failure, not as "No" |
+
+The rule is enforced in code, not only in the prompt. A requirement is **not sent to the model** when it is routed to
+the commercial or legal team (`ROUTE_*_TERMS`), or when nothing was retrieved for it and web search is off. Otherwise
+the model reports `sufficiency` and `missing`, and the app checks it: an answer that cites nothing whose quote
+really appears in a retrieved source, or that opens by saying the sources don't cover it, becomes a placeholder and
+**the model's prose is discarded**. A placeholder makes no compliance claim (`meets` is empty, shown as "Not
+assessed"), the requirement's status becomes `needs_input`, and it cannot be approved until a person writes the
+answer (which is then `fully_answered`). Section narratives leave placeholders out. The Word document shows each
+requirement's status and what is missing, and the compliance matrix has an "Answer state" column (last, so existing
+columns keep their positions). Whether a *cited* source really supports each claim is judged claim by claim by the
+verifier planned in #35; these states are the floor underneath it.
+
 **Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
 a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated
 answer or section narrative must also appear in what the model was given (the retrieved sources, the requirement,
@@ -720,14 +746,17 @@ latency and tokens per requirement (`--input-price`/`--output-price` add a cost 
 - `python scripts/eval_pipeline.py --check` exits 1 if any metric is worse than `evals/baseline.json` by more than
   its tolerance (2 points). The test suite runs the same check (`tests/test_eval_harness.py`), so CI fails on a
   regression in extraction, retrieval, prompts' post-processing or scoring.
-- `--mode live --record` calls the real model (billable; about 25 calls) and saves its answers under
+- `--mode live --record` calls the real model (billable; about 22 calls) and saves its answers under
   `evals/golden/recordings/<variant>/`. Do this when the prompts or the model change on purpose, then
   `--write-baseline` to accept the new numbers. `--mode live --degrade --record` adds a deliberately bad
-  instruction; the recorded `degraded` variant is kept to show that the metrics notice (citation support,
-  unsupported figures, abstention, false answers and answer correctness all get worse).
-- The baseline is honest: the model still answers some requirements it has no evidence for (60% of the
-  unsupported ones), which is the gap the claim verifier planned in #35 is meant to close. It also shows a known
-  extraction false positive ("Each answer shall be no longer than 200 words" is read as a requirement).
+  instruction; the recorded `degraded` variant is kept to show that the metrics notice and that the guardrails
+  hold (the model's invented figures are removed, and answers that cite nothing become placeholders).
+- Answer states (#33) took the false-answer rate on the unsupported requirements from 60% to 0%: each now ends as
+  a placeholder for a person (`state_correctness` checks this, and the golden set includes a pricing and a legal
+  requirement that must be routed, not drafted). The baseline still shows two honest gaps: the model quotes a stale
+  figure ("99.5%") while calling it outdated (answer correctness 94%), and a known extraction false positive ("Each
+  answer shall be no longer than 200 words" is read as a requirement, tracked in #32). Whether a cited source
+  supports a claim is the verifier's job (#35).
 - Add cases by adding a JSON file under `evals/golden/rfps/` (and documents to `kb.json`), then record. Keep the
   fixtures fictional: a test fails if they contain contact details, URLs or anything the redaction rules flag.
 
@@ -883,6 +912,7 @@ rfp-draft-agent/
 │   │   ├── kb_search.py           # Hybrid KB search, query embedding, citation checks
 │   │   ├── grounding.py           # Removes figures that are not in the sources
 │   │   ├── normalize.py           # Shape checks on model output
+│   │   ├── states.py              # Answer states, routing to people, and the "never invent" rule
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   ├── retrieval.py           # DLAC + segmentation query builder
 │   │   └── untrusted.py           # Fences that mark third-party text in prompts

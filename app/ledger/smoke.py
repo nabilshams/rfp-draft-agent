@@ -82,8 +82,9 @@ def main() -> int:
         check("does not overwrite a requirement a person changed meanwhile", refused["data"]["reason"] == "changed")
         failed = sink.record({"requirement_id": "R4", "answer_markdown": "Error", "generation_failed": True})
         check("does not store a failed generation as an answer", failed["data"]["reason"] == "failed")
+        check("marks the requirement as failed", service.get_requirement(store, project_id, "R4", user, settings)["state"] == "failed")
         responses, requirements = sink.document_inputs()
-        check("builds the documents from every answer in the project", len(responses) == 2 and len(requirements) == 130)
+        check("builds the documents from every answer, and every failure, in the project", len(responses) == 3 and len(requirements) == 130)
         check("keeps evidence details on the answer", service.get_requirement(store, project_id, "R2", user, settings)["answer"]["evidence"][0]["page"] == 3)
     finally:
         if project_id:

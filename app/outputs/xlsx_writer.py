@@ -1,8 +1,9 @@
 """Generate XLSX Compliance Matrix from agent draft output.
 
 Columns:
-  Requirement ID | Requirement Text | Priority | Meets (Yes/Partial/No) |
-  Evidence/Notes | Source URL
+  Requirement ID | Requirement Text | Priority | Meets (Yes/Partial/No) | Evidence/Notes | Source URL | Answer state
+
+A requirement that is waiting for a person (no evidence, pricing, legal) has an empty Meets cell: nothing is claimed.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from app.agents import states
 from app.ingestion.provenance import describe_source
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ _COLUMNS = [
     ("Meets (Yes/Partial/No)", 24),
     ("Evidence / Notes", 50),
     ("Source URL", 40),
+    ("Answer state", 22),  # last, so the columns existing workflows read keep their positions
 ]
 
 
@@ -90,10 +93,13 @@ def generate_xlsx(
             if ev.get("source_url"):
                 source_urls.append(ev["source_url"])
 
+        if resp.get("missing"):
+            evidence_parts.append(f"Missing: {resp['missing']}")
         evidence_text = "; ".join(evidence_parts) if evidence_parts else ""
         source_url_text = "\n".join(source_urls) if source_urls else ""
 
-        row_data = [req_id, req_text, priority, meets, evidence_text, source_url_text]
+        state = states.LABELS.get(str(resp.get("state", "")), "")
+        row_data = [req_id, req_text, priority, meets, evidence_text, source_url_text, state]
         for col_idx, value in enumerate(row_data, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = Alignment(vertical="top", wrap_text=True)

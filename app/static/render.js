@@ -6,17 +6,35 @@
 if (typeof module !== 'undefined') { var { esc, safeUrl } = require('./safe.js'); } // eslint-disable-line no-var
 
 const MEETS_CLASSES = { Yes: 'meets-yes', Partial: 'meets-partial', No: 'meets-no' };
-const meetsLabel = meets => (meets in MEETS_CLASSES ? meets : 'No');
+// A requirement waiting for a person makes no compliance claim: its `meets` is empty, which is not a "No".
+const meetsLabel = meets => (meets in MEETS_CLASSES ? meets : (meets ? 'No' : ''));
 const PRIORITY_CLASSES = { mandatory: 'badge-mandatory', preferred: 'badge-preferred' };
 const priorityClass = priority => PRIORITY_CLASSES[priority] || 'badge-standard';
 
-const STATUS_LABELS = { extracted: 'No answer yet', drafted: 'Drafted', edited: 'Edited', approved: 'Approved' };
+const STATUS_LABELS = {
+  extracted: 'No answer yet', drafted: 'Drafted', edited: 'Edited', approved: 'Approved', needs_input: 'Needs input',
+};
 const STATUS_STYLES = {
   extracted: 'background:#f3f2f1;color:#605e5c',
   drafted: 'background:#e6f0ff;color:#0f6cbd',
   edited: 'background:#fff4ce;color:#8a6d00',
   approved: 'background:#e8f5e9;color:var(--success)',
+  needs_input: 'background:#fde7e9;color:#a4262c',
 };
+
+// How far the sources answered a requirement (see app/agents/states.py). Placeholders are for a person to fill in.
+const STATE_LABELS = {
+  fully_answered: 'Fully answered', partially_answered: 'Partially answered', conflicting_evidence: 'Conflicting evidence',
+  no_evidence: 'No evidence', needs_sme: 'Needs SME', needs_commercial: 'Needs commercial', needs_legal: 'Needs legal',
+  failed: 'Failed',
+};
+const STATE_STYLES = {
+  fully_answered: 'background:#e8f5e9;color:var(--success)',
+  partially_answered: 'background:#fff4ce;color:#8a6d00',
+  conflicting_evidence: 'background:#fff4ce;color:#8a6d00',
+  failed: 'background:#fde7e9;color:#a4262c',
+};
+const PLACEHOLDER_STATES = ['no_evidence', 'needs_sme', 'needs_commercial', 'needs_legal'];
 
 function normReqId(id) { return String(id ?? '').trim(); }
 const respDomId = id => 'resp-' + encodeURIComponent(normReqId(id));
@@ -48,18 +66,29 @@ function evidenceItemHtml(e) {
   return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + link + tag + place + quote + '</li>';
 }
 
+function stateBadgeHtml(state) {
+  if (!(state in STATE_LABELS)) return '';
+  return '<span class="badge" style="' + (STATE_STYLES[state] || 'background:#fde7e9;color:#a4262c') + '">' + esc(STATE_LABELS[state]) + '</span>';
+}
+
 /** The compliance, answer text, evidence, warnings, assumptions and risks of one answer. */
 function answerBodyHtml(resp) {
   const meets = meetsLabel(resp.meets);
+  const placeholder = PLACEHOLDER_STATES.includes(resp.state);
   const evidence = (resp.evidence || []).map(evidenceItemHtml).join('');
   const listed = (label, items, color) => (items || []).length
     ? '<div style="margin-top:4px"><strong style="font-size:11px">' + label + ':</strong> <span style="font-size:11px' +
       (color ? ';color:' + color : '') + '">' + items.map(esc).join('; ') + '</span></div>'
     : '';
+  const body = placeholder
+    ? '<div style="font-size:12px;line-height:1.6;margin-bottom:6px;white-space:pre-wrap;padding:8px 10px;border:1px dashed #a4262c;border-radius:6px;background:#fff8f8">' + esc(resp.answer_markdown || '') + '</div>'
+    : '<div style="font-size:12px;line-height:1.6;margin-bottom:6px;white-space:pre-wrap">' + esc(resp.answer_markdown || '') + '</div>';
+  const missing = resp.missing && !placeholder
+    ? '<div style="margin-top:4px;font-size:11px;color:#8a6d00"><strong>Missing:</strong> ' + esc(resp.missing) + '</div>' : '';
   return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
-      '<span style="font-weight:700;font-size:13px" class="' + MEETS_CLASSES[meets] + '">' + esc(meets) + '</span>' +
-      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span></div>' +
-    '<div style="font-size:12px;line-height:1.6;margin-bottom:6px;white-space:pre-wrap">' + esc(resp.answer_markdown || '') + '</div>' +
+      '<span style="font-weight:700;font-size:13px' + (meets ? '' : ';color:var(--text-muted)') + '" class="' + (MEETS_CLASSES[meets] || '') + '">' + esc(meets || 'Not assessed') + '</span>' +
+      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' + stateBadgeHtml(resp.state) + '</div>' +
+    body + missing +
     (evidence ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evidence + '</ul></div>' : '') +
     (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
     listed('Assumptions', resp.assumptions) + listed('Risks', resp.risks, 'var(--error)');
@@ -87,7 +116,9 @@ function requirementActionsHtml(req, running) {
   const button = (action, label, extra) =>
     '<button class="btn btn-secondary btn-sm" data-action="' + action + '" data-rid="' + rid + '"' + (extra || '') + '>' + label + '</button>';
   const parts = [button('edit-answer', req.answer ? 'Edit answer' : 'Write answer')];
-  if (req.answer && req.status !== 'approved') parts.push(button('approve', 'Approve'));
+  // Only an answer the sources support can be approved; a placeholder or conflict needs a person to write it first
+  const approvable = !req.state || ['fully_answered', 'partially_answered'].includes(req.state);
+  if (req.answer && req.status !== 'approved' && approvable) parts.push(button('approve', 'Approve'));
   if (req.answer) parts.push(button('versions', 'Versions (' + Number(req.answer_version) + ')'));
   parts.push(button('history', 'History'));
   parts.push(button('redraft', req.answer ? 'Redraft' : 'Draft this', running ? ' disabled title="A draft is running"' : ''));
@@ -97,7 +128,9 @@ function requirementActionsHtml(req, running) {
 function requirementBodyHtml(req, running) {
   const answer = req.answer
     ? answerMetaHtml(req.answer) + answerBodyHtml(req.answer)
-    : '<em style="color:var(--text-muted)">No answer yet.</em>';
+    : (req.state === 'failed'
+      ? '<em style="color:#a4262c">Drafting failed for this requirement. Draft again to retry.</em>'
+      : '<em style="color:var(--text-muted)">No answer yet.</em>');
   return answer + requirementActionsHtml(req, running) +
     '<div class="req-extra" data-for="' + esc(req.rid) + '"></div>';
 }
@@ -127,6 +160,7 @@ function countsHtml(counts, total) {
   const item = (label, n, color) => '<span style="color:' + color + '"><strong>' + Number(n) + '</strong> ' + label + '</span>';
   return '<div style="display:flex;gap:14px;font-size:12px;flex-wrap:wrap">' +
     item('no answer', counts.extracted || 0, 'var(--text-muted)') + item('drafted', counts.drafted || 0, '#0f6cbd') +
+    item('needs input', counts.needs_input || 0, '#a4262c') +
     item('edited', counts.edited || 0, '#8a6d00') + item('approved', counts.approved || 0, 'var(--success)') +
     '<span style="color:var(--text-muted)">of ' + Number(total) + '</span></div>';
 }
@@ -136,7 +170,8 @@ function countsHtml(counts, total) {
 function editFormHtml(req) {
   const answer = req.answer || {};
   const meets = ['Yes', 'Partial', 'No'].map(m =>
-    '<option value="' + m + '"' + (answer.meets === m ? ' selected' : '') + '>' + m + '</option>').join('');
+    '<option value="' + m + '"' + (answer.meets === m ? ' selected' : '') + '>' + m + '</option>').join('') +
+    (answer.answer_markdown && !answer.meets ? '<option value="" selected>Not assessed</option>' : '');
   return '<div class="edit-form" style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#fff">' +
     '<label>Answer</label><textarea class="edit-text" rows="6">' + esc(answer.answer_markdown || '') + '</textarea>' +
     '<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><label style="margin:0">Compliance</label>' +
@@ -213,7 +248,7 @@ function projectListHtml(projects) {
 if (typeof module !== 'undefined') {
   module.exports = {
     meetsLabel, priorityClass, normReqId, respDomId, blockDomId, formatTime, evidenceItemHtml, answerBodyHtml,
-    statusBadgeHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
+    statusBadgeHtml, stateBadgeHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
     versionsHtml, describeEvent, eventsHtml, projectListHtml,
   };
 }

@@ -269,7 +269,7 @@ class TestGuidance:
 
         answers.answer_single_requirement(
             requirement={"id": "R1", "text": "Encrypt data"},
-            context=RetrievedContext(),
+            context=RetrievedContext([{"title": "G", "source_url": "https://kb/g", "content": "Data is encrypted."}]),
             tone="professional",
             agent_id="agent-1",
             guidance="Answers must be no longer than 200 words.",
@@ -283,7 +283,7 @@ class TestGuidance:
         agent.reply = lambda _p: json.dumps({"requirement_id": "R1", "answer_markdown": "ok", "meets": "Yes"})
         answers.answer_single_requirement(
             requirement={"id": "R1", "text": "Encrypt data"},
-            context=RetrievedContext(),
+            context=RetrievedContext([{"title": "G", "source_url": "https://kb/g", "content": "Data is encrypted."}]),
             tone="professional",
             agent_id="agent-1",
         )

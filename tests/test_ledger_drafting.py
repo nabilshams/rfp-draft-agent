@@ -101,7 +101,7 @@ class TestSavingAnswers:
             "title": "Policy", "source_url": "/kb/doc/abc", "quote": "AES-256", "source_type": "authoritative",
             "effective_date": "2026-05-01", "version": "4", "section": "3. Encryption", "page": 4,
         }
-        assert state["counts"] == {"extracted": 0, "drafted": 3, "edited": 0, "approved": 0}
+        assert state["counts"] == {"extracted": 0, "drafted": 3, "edited": 0, "approved": 0, "needs_input": 0}
 
     async def test_the_draft_is_recorded_in_the_audit_trail(self, api, worker, script):  # noqa: F811
         project = await make_project(api)
@@ -464,7 +464,7 @@ class TestAccess:
 class TestPieces:
     def test_a_failed_generation_is_marked_so_nothing_stores_it_as_an_answer(self):
         failed = answers.error_answer({"id": "R1", "text": "t"}, message="Error: x", risk="x")
-        assert failed["generation_failed"] is True and failed["meets"] == "No"
+        assert failed["generation_failed"] is True and failed["state"] == "failed" and failed["meets"] == ""
 
     def test_strategies_carry_the_marker_and_the_whole_answer_through_the_section_approach(self, monkeypatch):
         good = {**reply_for({"id": "R1", "text": "t"}), "extra": "dropped"}

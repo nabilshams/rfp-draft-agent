@@ -20,6 +20,7 @@ _LABELS = {
     "unsupported_claim_rate_raw": ("Unsupported figures (model)", "answers where the model wrote a figure not in its sources"),
     "unsupported_claim_rate_final": ("Unsupported figures (delivered)", "the same, after the app removed them (should be 0)"),
     "abstention_correctness": ("Abstention correctness", "declined when the knowledge base has nothing, answered when it has"),
+    "state_correctness": ("State correctness", "answers that ended in the right state (answered, or a placeholder for a person)"),
     "false_answer_rate": ("False answers", "unsupported requirements that were answered anyway"),
     "answer_correctness": ("Answer correctness", "answers that state the expected fact and not the stale one"),
     "compliance_correctness": ("Compliance correctness", "Yes/Partial/No matches what the sources support"),

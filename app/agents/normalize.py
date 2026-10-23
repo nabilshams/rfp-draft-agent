@@ -50,7 +50,9 @@ def normalize_answer(answer: dict[str, Any], *, require_meets: bool = True) -> d
     for key in _LIST_FIELDS:
         result[key] = _strings(answer.get(key))
 
-    if require_meets or "meets" in answer:
+    if not require_meets and "meets" in answer and not _text(answer.get("meets")).strip():
+        result["meets"] = ""  # no claim: a placeholder for a person
+    elif require_meets or "meets" in answer:
         meets = _MEETS.get(_text(answer.get("meets")).strip().lower())
         if meets is None:
             meets = "Partial"

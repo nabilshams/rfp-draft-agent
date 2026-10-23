@@ -85,7 +85,7 @@ function renderAllRequirements() {
 /** Counts, the draft button and the data the older document-generation step reads. */
 function syncPageState() {
   const reqs = [...projectReqs.values()];
-  const counts = { extracted: 0, drafted: 0, edited: 0, approved: 0 };
+  const counts = { extracted: 0, drafted: 0, edited: 0, approved: 0, needs_input: 0 };
   reqs.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
   $('extractSummary').innerHTML = countsHtml(counts, reqs.length);
   const remaining = counts.extracted;
@@ -97,7 +97,7 @@ function syncPageState() {
   generatedResponses = reqs.filter(r => r.answer).map(r => ({
     requirement_id: r.rid, requirement_text: r.text, answer_markdown: r.answer.answer_markdown, meets: r.answer.meets,
     evidence: r.answer.evidence, assumptions: r.answer.assumptions, risks: r.answer.risks, followups: r.answer.followups,
-    kb_evidence_found: r.answer.kb_evidence_found,
+    kb_evidence_found: r.answer.kb_evidence_found, state: r.state, missing: r.missing,
   }));
   updateDocGenStatus();
 }
@@ -282,7 +282,7 @@ async function saveAnswer(button) {
   const text = block.querySelector('.edit-text').value.trim();
   if (!text) return toast('Write an answer first.', 'error');
   await changeRequirement(() => postJson(requirementPath(rid, '/answers'), {
-    answer_markdown: text, meets: block.querySelector('.edit-meets').value, expected_rev: Number(button.dataset.rev),
+    answer_markdown: text, meets: block.querySelector('.edit-meets').value || undefined, expected_rev: Number(button.dataset.rev),
   }), 'Saved as a new version.');
 }
 
