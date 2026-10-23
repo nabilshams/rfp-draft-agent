@@ -58,7 +58,7 @@ class TestCreate:
 
         assert [r["rid"] for r in reloaded["requirements"]] == ["R1", "R2", "R3"]
         assert reloaded["requirements"][0]["answer"]["answer_markdown"] == "AES-256."
-        assert reloaded["counts"] == {"extracted": 2, "drafted": 0, "edited": 1, "approved": 0}
+        assert reloaded["counts"] == {"extracted": 2, "drafted": 0, "edited": 1, "approved": 0, "needs_input": 0}
 
     async def test_the_rfps_guidance_is_kept_with_the_project_for_drafting(self, api):
         def build(document):
@@ -347,7 +347,7 @@ class TestAnswers:
         project = await make_project(api)
         await api.post(url(project, "requirements/R1/answers"), json={"answer_markdown": "Secret plan."}, headers=A)
         (event, *_) = (await api.get(url(project, "events"), params={"rid": "R1"}, headers=A)).json()["events"]
-        assert event["action"] == "answer.added" and event["details"] == {"version": 1, "source": "user"}
+        assert event["action"] == "answer.added" and event["details"] == {"version": 1, "source": "user", "state": "fully_answered"}
 
     async def test_what_a_person_writes_is_redacted_like_everything_else(self, api):
         project = await make_project(api)
@@ -391,7 +391,7 @@ class TestModelAnswers:
         assert requirement["answer"]["author"] == "agent" and requirement["answer"]["job_id"] == "job-1"
         assert requirement["answer"]["kb_evidence_found"] is True
         (event, *_) = (await api.get(url(project, "events"), params={"rid": "R1"}, headers=A)).json()["events"]
-        assert event["actor"] == "agent" and event["details"] == {"version": 1, "source": "model", "job_id": "job-1"}
+        assert event["actor"] == "agent" and event["details"] == {"version": 1, "source": "model", "job_id": "job-1", "state": "fully_answered"}
 
 
 def api_settings():

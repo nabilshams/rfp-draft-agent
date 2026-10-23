@@ -6,16 +6,20 @@ import json
 import logging
 from typing import Any
 
-from app.agents import grounding, kb_search, lifecycle, runner
+from app.agents import grounding, kb_search, lifecycle, runner, states
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
 from app.agents.untrusted import fence, guidance_block
+from app.config import get_settings
 from app.telemetry import spans
 
 logger = logging.getLogger(__name__)
 
 _COMPLIANCE_FIELDS = (
     '- "meets": "Yes", "Partial", or "No"\n'
+    '- "sufficiency": "complete", "partial", "none", "needs_sme" or "conflict" (how well the sources cover the '
+    'requirement; with "none" or "needs_sme" leave answer_markdown empty and evidence empty)\n'
+    '- "missing": what the sources do not cover, in one short phrase (empty when complete)\n'
     '- "evidence": array of {"title", "source_url", "quote"}\n'
     '- "assumptions": array of strings\n'
     '- "risks": array of strings\n'
@@ -33,21 +37,8 @@ def parse_requirements(requirements_json: str) -> list[dict[str, Any]]:
 
 
 def error_answer(requirement: dict[str, Any], *, message: str, risk: str, kb_evidence_found: bool = False) -> dict[str, Any]:
-    """The response shown for a requirement whose generation failed."""
-    return {
-        "requirement_id": requirement.get("id", "?"),
-        "requirement_text": requirement.get("text", ""),
-        "answer_markdown": message,
-        "meets": "No",
-        "evidence": [],
-        "assumptions": [],
-        "risks": [risk],
-        "followups": [],
-        "kb_evidence_found": kb_evidence_found,
-        # Marks an answer that is only a placeholder for a failure: a project draft does not store it as the answer,
-        # so a later run tries the requirement again.
-        "generation_failed": True,
-    }
+    """The record of a requirement whose generation failed: state ``failed`` and no compliance claim (never "No")."""
+    return states.failed_answer(requirement, message=message, risk=risk, kb_evidence_found=kb_evidence_found)
 
 
 def exception_answer(requirement: dict[str, Any], exc: BaseException) -> dict[str, Any]:
@@ -98,6 +89,9 @@ def run_draft(
         f"  - \"requirement_text\": the original requirement text (copied verbatim)\n"
         f"  - \"answer_markdown\": your detailed response\n"
         f"  - \"meets\": \"Yes\", \"Partial\", or \"No\"\n"
+        f"  - \"sufficiency\": \"complete\", \"partial\", \"none\", \"needs_sme\" or \"conflict\" (how well the sources "
+        f"cover it; with \"none\" or \"needs_sme\" leave answer_markdown and evidence empty)\n"
+        f"  - \"missing\": what the sources do not cover, in one short phrase\n"
         f"  - \"evidence\": array of {{\"title\", \"source_url\", \"quote\"}}\n"
         f"  - \"assumptions\": array of strings\n"
         f"  - \"risks\": array of strings\n"
@@ -136,10 +130,14 @@ def run_draft(
     except (ValueError, IndexError):
         draft = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
 
-    for response in draft.get("responses", []) if isinstance(draft, dict) else []:
-        if isinstance(response, dict):
-            response["kb_evidence_found"] = evidence_found.get(str(response.get("requirement_id", "")), context.found)
-            grounding.note_removed(response, grounding.ground_fields(response, ("answer_markdown",), given))
+    router = states.router_from_settings(get_settings())
+    by_id = {str(r.get("id", "")): r for r in requirements}
+    if isinstance(draft, dict) and isinstance(draft.get("responses"), list):
+        draft["responses"] = [
+            _settled(response, by_id, router, evidence_found, context, bool(result.annotation_urls), given)
+            for response in draft["responses"]
+            if isinstance(response, dict)
+        ]
     if isinstance(draft, dict):
         grounding.ground_fields(draft, ("executive_summary", "solution_overview"), given)
 
@@ -151,6 +149,27 @@ def run_draft(
         "kb_sources": len(context.docs),
     }
     return draft
+
+
+def _settled(
+    response: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    router: states.Router,
+    evidence_found: dict[str, bool],
+    context: RetrievedContext,
+    web_grounded: bool,
+    given: str,
+) -> dict[str, Any]:
+    """One response of a full draft with its state decided (see :mod:`app.agents.states`)."""
+    rid = str(response.get("requirement_id", ""))
+    requirement = by_id.get(rid, {"id": rid, "text": response.get("requirement_text", "")})
+    found = evidence_found.get(rid, context.found)
+    routed = router.route(requirement)
+    if routed:
+        return states.placeholder_answer(requirement, routed, kb_evidence_found=found)
+    response["kb_evidence_found"] = found
+    grounding.note_removed(response, grounding.ground_fields(response, ("answer_markdown",), given))
+    return states.finalize(response, requirement, docs=context.docs, web_grounded=web_grounded)
 
 
 def answer_single_requirement(**kwargs: Any) -> dict[str, Any]:
@@ -171,6 +190,7 @@ def answer_single_requirement(**kwargs: Any) -> dict[str, Any]:
             evidence=len(answer.get("evidence") or []),
             citations=len(kb_search.cited_urls(answer)),
             answer__chars=len(str(answer.get("answer_markdown", ""))),
+            answer__state=str(answer.get("state", "")),
             outcome="ok",
         )
         return answer
@@ -189,6 +209,18 @@ def _answer_single_requirement(
     """The work of :func:`answer_single_requirement`."""
     req_id = requirement.get("id", "?")
     req_text = requirement.get("text", "")
+
+    # Some requirements are never drafted (pricing, contract terms), and with nothing retrieved there is nothing to
+    # draft from: say so without asking the model.
+    gated = states.pre_gate(
+        requirement,
+        router=states.router_from_settings(get_settings()),
+        evidence_found=context.found,
+        web_search=allow_web_search,
+    )
+    if gated is not None:
+        logger.info("Requirement %s is %s: not sent to the model", req_id, gated["state"])
+        return gated
 
     context_preamble = ""
     if user_context:
@@ -244,20 +276,21 @@ def _answer_single_requirement(
         answer["requirement_id"] = req_id
         answer["kb_evidence_found"] = context.found
         grounding.note_removed(answer, grounding.ground_fields(answer, ("answer_markdown",), given))
-        return answer
+        return states.finalize(answer, requirement, docs=context.docs, web_grounded=bool(run_result.annotation_urls))
     except (ValueError, IndexError):
-        text, _ = grounding.remove_unsupported_figures(safe_text, given)
-        return {
-            "requirement_id": req_id,
-            "requirement_text": req_text,
-            "answer_markdown": kb_search.sanitize_citations(text, allowed_urls),
-            "meets": "Partial",
-            "evidence": [],
-            "assumptions": [],
-            "risks": [],
-            "followups": [],
-            "kb_evidence_found": context.found,
-        }
+        # The reply was not the JSON we asked for. Its text is not kept as an answer: it is a failed generation.
+        logger.warning("Requirement %s: the model did not return a usable answer object", req_id)
+        return error_answer(
+            requirement,
+            message="The model did not return a usable answer.",
+            risk="The model reply could not be read",
+            kb_evidence_found=context.found,
+        )
+
+
+def _free_form(answer: dict[str, Any]) -> dict[str, Any]:
+    """An answer to a free-form question has no requirement and no compliance claim: drop what a requirement carries."""
+    return {k: v for k, v in answer.items() if k not in ("requirement_id", "requirement_text", "meets")}
 
 
 def run_single_answer(
@@ -286,14 +319,26 @@ def run_single_answer(
         )
     )
 
+    # The same rules as a requirement: pricing and contract questions go to people, and with nothing retrieved
+    # there is nothing to answer from
+    question_as_requirement = {"id": "", "text": question}
+    gated = states.pre_gate(
+        question_as_requirement,
+        router=states.router_from_settings(get_settings()),
+        evidence_found=context.found,
+        web_search=allow_web_search,
+    )
+    if gated is not None:
+        return {**_free_form(gated), "kb_evidence_found": context.found}
+
     agent_id = lifecycle.ensure_agent(lifecycle.QA_AGENT_NAME)
 
     result = runner.run_agent_prompt(
         agent_id,
         (
             f"Answer the following question using ONLY the retrieved sources below.  "
-            f"Return a JSON object with answer_markdown, evidence, assumptions, "
-            f"and followups.\n\n"
+            f"Return a JSON object with answer_markdown, evidence, assumptions, followups, "
+            f"sufficiency (complete, partial, none, needs_sme or conflict) and missing.\n\n"
             f"{context.block}\n\n"
             f"Question:\n{fence('QUESTION', question)}"
         ),
@@ -312,6 +357,11 @@ def run_single_answer(
         )
     except (ValueError, IndexError):
         answer = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
-    if isinstance(answer, dict):
+    if isinstance(answer, dict) and not answer.get("parse_error"):
+        answer["kb_evidence_found"] = context.found
+        answer = _free_form(
+            states.finalize(answer, question_as_requirement, docs=context.docs, web_grounded=bool(result.annotation_urls))
+        )
+    elif isinstance(answer, dict):
         answer["kb_evidence_found"] = context.found
     return answer

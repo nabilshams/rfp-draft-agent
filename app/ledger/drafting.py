@@ -25,6 +25,7 @@ from typing import Any
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from fastapi import HTTPException
 
+from app.agents import states
 from app.auth.access import can_manage
 from app.auth.entra import UserClaims
 from app.config import Settings
@@ -54,6 +55,7 @@ def _strategy_requirement(doc: Doc) -> dict[str, Any]:
         "type": doc.get("type", "requirement"),
         "category": doc.get("category", "general"),
         "priority": doc.get("priority", "standard"),
+        "source_section": doc.get("source_section", ""),
     }
 
 
@@ -97,6 +99,7 @@ class ProjectSink:
             return None
         if response.get("generation_failed"):
             self.failed.append(rid)
+            self._mark_failed(rid)
             return self._not_saved(rid, "failed")
 
         for attempt in range(1, RETRIES + 1):
@@ -124,6 +127,15 @@ class ProjectSink:
                 return {"type": "saved", "data": {"requirement_id": rid, "version": requirement["answer_version"]}}
         return None  # pragma: no cover - the loop always returns or raises
 
+    def _mark_failed(self, rid: str) -> None:
+        """Show the requirement as failed (best effort: a conflict means somebody just changed it, which wins)."""
+        try:
+            service.mark_failed(self._store, self._project_id, rid, job_id=self._job_id, expected_rev=self._revs[rid])
+        except HTTPException:
+            pass
+        except (HttpResponseError, ServiceRequestError):
+            logger.warning("Could not record that %s failed", rid, exc_info=True)
+
     def _is_ours(self, rid: str) -> bool:
         doc = self._store.get(self._project_id, service.req_doc_id(rid))
         return bool(doc and (doc.get("answer") or {}).get("job_id") == self._job_id)
@@ -135,7 +147,11 @@ class ProjectSink:
     def document_inputs(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Everything the project has: its documents are the whole bid, not just what this run drafted."""
         docs = self._store.query(self._project_id, "requirement", order_by="order")
-        responses = [response_of(d) for d in docs if d.get("answer")]
+        responses = [
+            response_of(d) if d.get("answer") else states.failed_answer(_strategy_requirement(d), message="Drafting failed", risk="")
+            for d in docs
+            if d.get("answer") or d.get("state") == states.FAILED
+        ]
         return responses, [_strategy_requirement(d) for d in docs]
 
     def finish(self, outcome: str) -> None:
@@ -160,6 +176,8 @@ def response_of(requirement: Doc) -> dict[str, Any]:
         "risks": answer.get("risks", []),
         "followups": answer.get("followups", []),
         "kb_evidence_found": answer.get("kb_evidence_found", False),
+        "state": requirement.get("state", ""),
+        "missing": requirement.get("missing", ""),
     }
 
 
@@ -258,6 +276,8 @@ def status(store: LedgerStore, settings: Settings, user: UserClaims, project_id:
     project = service.load_project(store, project_id, user, settings)
     requirements = store.query(project_id, "requirement")
     remaining = sum(1 for r in requirements if not r.get("answer_version"))
+    needs_input = sum(1 for r in requirements if r.get("status") == "needs_input")
+    failed = sum(1 for r in requirements if r.get("state") == states.FAILED and not r.get("answer_version"))
     claim = project.get("draft_job")
     job = jobs.find_job(settings, claim["id"]) if claim else None
 
@@ -284,6 +304,8 @@ def status(store: LedgerStore, settings: Settings, user: UserClaims, project_id:
         "running": bool(job and job.status in jobs.ACTIVE_STATES) or _is_starting(settings, project),
         "interrupted": bool(job and job.status == "failed" and job.error == jobs.LOST_JOB),
         "remaining": remaining,
+        "needs_input": needs_input,
+        "failed": failed,
         "total": len(requirements),
     }
 

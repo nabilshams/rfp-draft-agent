@@ -154,3 +154,50 @@ class TestEventsAndLists:
     def test_the_list_offers_to_open_each_project(self):
         html = render("r.projectListHtml([{id: 'abc', name: 'Bid', owner: 'u', groups: [], requirement_count: 2, created_at: '2026-10-22T12:00:00Z'}])")
         assert 'data-action="open-project" data-project="abc"' in html and "private" in html
+
+class TestAnswerStates:
+    PLACEHOLDER = "[SME INPUT REQUIRED: no source in the knowledge base covers this requirement]"
+
+    def placeholder(self, **overrides):
+        return answer(meets="", answer_markdown=self.PLACEHOLDER, state="no_evidence", missing="a reference", **overrides)
+
+    def test_a_placeholder_makes_no_compliance_claim_and_is_set_apart(self):
+        html = block(requirement(status="needs_input", state="no_evidence", answer_version=1, answer=self.placeholder()))
+        assert "Not assessed" in html and ">No<" not in html
+        assert "SME INPUT REQUIRED" in html and "dashed" in html
+        assert "Needs input" in html and "No evidence" in html
+
+    def test_a_placeholder_cannot_be_approved_but_can_be_written(self):
+        html = block(requirement(status="needs_input", state="no_evidence", answer_version=1, answer=self.placeholder()))
+        assert 'data-action="approve"' not in html and 'data-action="edit-answer"' in html
+
+    def test_editing_a_placeholder_does_not_default_to_a_compliance_value(self):
+        html = render("r.editFormHtml(" + json.dumps(requirement(answer=self.placeholder(), answer_version=1)) + ")")
+        assert '<option value="" selected>Not assessed</option>' in html
+
+    def test_a_partial_answer_shows_what_is_missing_and_can_be_approved(self):
+        partial = answer(meets="Partial", state="partially_answered", missing="the failover time")
+        html = block(requirement(status="drafted", state="partially_answered", answer_version=1, answer=partial))
+        assert "Partially answered" in html and "the failover time" in html and 'data-action="approve"' in html
+
+    def test_conflicting_evidence_cannot_be_approved_until_a_person_resolves_it(self):
+        conflict = answer(state="conflicting_evidence", missing="the 2022 and 2026 policies differ")
+        html = block(requirement(status="drafted", state="conflicting_evidence", answer_version=1, answer=conflict))
+        assert "Conflicting evidence" in html and 'data-action="approve"' not in html
+
+    def test_a_failed_requirement_says_so_and_offers_a_retry(self):
+        html = block(requirement(state="failed"))
+        assert "Drafting failed" in html and ">Draft this<" in html
+
+    def test_an_answer_that_is_fully_supported_shows_that(self):
+        html = block(requirement(status="drafted", state="fully_answered", answer_version=1,
+                                 answer=answer(state="fully_answered")))
+        assert "Fully answered" in html and ">Yes<" in html
+
+    def test_the_state_text_is_escaped(self):
+        html = block(requirement(status="drafted", answer_version=1, answer=answer(missing=ATTACK)))
+        assert ATTACK not in html and "&lt;img" in html
+
+    def test_counts_include_the_requirements_that_need_input(self):
+        html = render("r.countsHtml({extracted: 1, needs_input: 3}, 4)")
+        assert "needs input" in html and "<strong>3</strong>" in html

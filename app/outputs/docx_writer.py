@@ -15,6 +15,7 @@ from typing import Any
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from app.agents import states
 from app.ingestion.provenance import describe_source
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
 
     compliance_summary = ""
     if responses:
-        summary_lines = [f"- {r.get('requirement_id', 'N/A')}: {r.get('meets', 'N/A')}" for r in responses]
+        summary_lines = [f"- {r.get('requirement_id', 'N/A')}: {r.get('meets') or 'Not assessed'}" for r in responses]
         compliance_summary = "\n".join(summary_lines)
 
     # -- Main narrative sections ---------------------------
@@ -206,10 +207,16 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
         doc.add_heading(f"Requirement {req_id}", level=2)
 
         # Compliance status
-        meets = resp.get("meets", "N/A")
+        meets = resp.get("meets") or "Not assessed"
         status_para = doc.add_paragraph()
         status_run = status_para.add_run(f"Compliance: {meets}")
         status_run.bold = True
+        state = states.LABELS.get(str(resp.get("state", "")))
+        if state:
+            state_run = status_para.add_run(f"   Status: {state}")
+            state_run.bold = True
+        if resp.get("missing"):
+            doc.add_paragraph(f"Missing: {resp['missing']}")
 
         # Answer
         doc.add_paragraph(resp.get("answer_markdown", ""))

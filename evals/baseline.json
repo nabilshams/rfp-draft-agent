@@ -3,16 +3,17 @@
   "tolerance": 0.02,
   "metrics": {
     "extraction_recall": 1.0,
-    "extraction_precision": 0.9565,
+    "extraction_precision": 0.96,
     "retrieval_hit_rate": 1.0,
     "retrieval_mrr": 1.0,
     "answer_rate": 1.0,
     "citation_support_rate": 1.0,
     "unsupported_claim_rate_raw": 0.0,
     "unsupported_claim_rate_final": 0.0,
-    "abstention_correctness": 0.8636,
-    "false_answer_rate": 0.6,
-    "answer_correctness": 1.0,
+    "abstention_correctness": 1.0,
+    "state_correctness": 1.0,
+    "false_answer_rate": 0.0,
+    "answer_correctness": 0.9412,
     "compliance_correctness": 1.0
   }
 }

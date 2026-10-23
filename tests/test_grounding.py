@@ -83,7 +83,7 @@ class TestAnswers:
             "requirement_id": "R1",
             "answer_markdown": "We improved turnover by 15%. Our platform encrypts data with AES-256 [Guide](https://kb/guide.pdf).",
             "meets": "Yes",
-            "evidence": [{"title": "Guide", "source_url": "https://kb/guide.pdf", "quote": "AES-256"}],
+            "evidence": [{"title": "Guide", "source_url": "https://kb/guide.pdf", "quote": "Data is encrypted"}],
         }
     )
 

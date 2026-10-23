@@ -71,6 +71,23 @@ class Settings(BaseSettings):
     ledger_backend: Literal["", "cosmos", "memory"] = Field("", alias="LEDGER_BACKEND")
     ledger_max_requirements: int = Field(1000, alias="LEDGER_MAX_REQUIREMENTS", ge=1, le=5000)
 
+    # ── Never invent: requirements that are routed to people, not drafted ──
+    # Terms separated by ";". ``word*`` matches any word starting that way; other terms match as whole words or
+    # phrases (never inside a hyphenated word: "cost-effective" is not about cost). A requirement whose text, category
+    # or section matches is not sent to the model: it is given to the commercial or legal team (see app.agents.states).
+    route_commercial_terms: str = Field(
+        "price*; pricing; cost; costs; costing; fee; fees; rate card*; discount*; payment*; invoic*; quote; quotes; "
+        "quotation*; budget*; total cost of ownership; tco; per user per month; licensing model",
+        alias="ROUTE_COMMERCIAL_TERMS",
+    )
+    route_legal_terms: str = Field(
+        "indemnif*; liabilit*; warrant*; governing law; jurisdiction*; terms and conditions; intellectual property; "
+        "termination for*; insurance; force majeure; non-disclosure; nda; liquidated damages; penalt*; "
+        "dispute resolution; contractual; contract terms; master services agreement; data processing agreement; "
+        "service credit*",
+        alias="ROUTE_LEGAL_TERMS",
+    )
+
     # ── Knowledge-base retrieval ──────────────────────────
     search_top_k: int = Field(5, alias="SEARCH_TOP_K", ge=1, le=20)  # documents retrieved per query
     # Documents scoring below this are dropped. Uses the semantic reranker score (0-4) when the

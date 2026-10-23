@@ -168,7 +168,11 @@ class TestFlowsPassTheChoiceThrough:
         monkeypatch.setattr(runner, "run_agent_prompt", fake_run)
         monkeypatch.setattr(lifecycle, "ensure_agent", lambda name: "agent-1")
         monkeypatch.setattr(kb_search, "embed_queries", lambda qs: [[0.1]] * len(qs))
-        monkeypatch.setattr(kb_search, "search_kb", lambda **_kw: [])
+        monkeypatch.setattr(
+            kb_search,
+            "search_kb",
+            lambda **_kw: [{"title": "T", "source_url": "https://kb/t", "content": "encryption text", "score": 1.0}],
+        )
         return flags
 
     REQS = [{"id": "R1", "text": "encryption"}]

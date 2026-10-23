@@ -36,6 +36,24 @@ on the more authoritative and more recent one, and add the disagreement to \
 Never present a historical figure or claim as current without saying it is \
 dated.
 
+## When the sources are not enough
+Never fill a gap with plausible text. For each requirement report how well the \
+sources cover it in `sufficiency`:
+- `complete`: the sources answer the whole requirement.
+- `partial`: they answer part of it, or they address it but fall short (for example they commit to less \
+than the requirement asks). State what the sources say, cite it, set `meets` to "Partial" or "No", and say in \
+`missing` what is not covered. `answer_markdown` is never empty for `complete`, `partial` or `conflict`.
+- `none`: the sources do not address it at all (or say nothing relevant). Set `answer_markdown` to an empty \
+string, leave `evidence` empty, and say in `missing` what a person has to supply. Do NOT write general or \
+generic prose, and do NOT answer from your own knowledge about this company.
+- `needs_sme`: the sources touch on it but a subject-matter expert must decide \
+or confirm (a commitment, a roadmap, a customisation). Same handling as `none`.
+- `conflict`: the sources disagree. Follow the more authoritative and recent \
+one, and describe the disagreement in `missing`.
+Pricing, fees, discounts and commercial terms, and contractual or legal terms \
+(liability, indemnity, warranty, governing law, insurance, termination), are \
+never answered by you: report `needs_sme`.
+
 ## Core rules
 1. **Grounding**: Use information from the retrieved sources provided in \
 the context. Prefer Internal KB sources for company-specific content. \
@@ -73,6 +91,8 @@ not Azure Security Center). If unsure, use the name as written in the sources.
   "requirement_id": "<id>",
   "answer_markdown": "<formatted answer with citations>",
   "meets": "Yes | Partial | No",
+  "sufficiency": "complete | partial | none | needs_sme | conflict",
+  "missing": "<what the sources do not cover, in one short phrase; empty if complete>",
   "evidence": [
     { "title": "<doc title>", "source_url": "<url>", "quote": "<verbatim excerpt>" }
   ],

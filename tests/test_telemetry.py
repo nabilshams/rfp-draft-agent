@@ -37,6 +37,9 @@ def exporter(monkeypatch):
     return memory
 
 
+CITED = {"title": "Guide", "source_url": "https://kb/acme/p1/cloud/guide.pdf", "quote": "Data is encrypted with AES-256."}
+
+
 @pytest.fixture
 def model(monkeypatch):
     """The model: 1000 input and 200 output tokens per call; replies with SECRET_ANSWER in an answer object."""
@@ -44,7 +47,7 @@ def model(monkeypatch):
 
     def run(agent_id, content, *, web_search=False):
         state.calls += 1
-        reply = json.dumps({"requirement_id": "R1", "answer_markdown": SECRET_ANSWER, "meets": "Yes", "evidence": []})
+        reply = json.dumps({"requirement_id": "R1", "answer_markdown": SECRET_ANSWER, "meets": "Yes", "evidence": [CITED]})
         return runner.AgentRunResult(
             status=state.status, text=reply, has_response=True, usage={"input_tokens": 1000, "output_tokens": 200}
         )

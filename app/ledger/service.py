@@ -22,6 +22,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.agents import states
 from app.agents.normalize import normalize_answer
 from app.auth.access import can_manage, is_admin, resolve_share_groups
 from app.auth.entra import UserClaims
@@ -32,7 +33,9 @@ from app.ledger.store import Conflict, Doc, LedgerStore, public
 
 logger = logging.getLogger(__name__)
 
-STATUSES = ("extracted", "drafted", "edited", "approved")
+# ``needs_input``: the draft is a placeholder for a person to fill in (see app.agents.states). It is set by drafting, never
+# chosen by a user, so the update schema does not offer it.
+STATUSES = ("extracted", "drafted", "edited", "approved", "needs_input")
 PRIORITIES = ("mandatory", "preferred", "standard")
 MAX_NAME = 200
 MAX_TEXT = 5000
@@ -172,6 +175,8 @@ def _requirement_docs(project_id: str, requirements: list[dict[str, Any]], actor
             "assignee": "",
             "assignee_name": "",
             "status": "extracted",
+            "state": "",
+            "missing": "",
             "answer_version": 0,
             "answer": None,
             "rev": 1,
@@ -265,6 +270,21 @@ def _summary(project: Doc, user: UserClaims, settings: Settings) -> Doc:
     summary.pop("guidance", None)
     summary["can_manage"] = can_manage(project.get("owner"), user, settings)
     return summary
+
+
+def mark_failed(store: LedgerStore, project_id: str, rid: str, *, job_id: str, expected_rev: int) -> None:
+    """Record that drafting a requirement failed. It keeps no answer, so the next draft tries it again."""
+    requirement = _load_requirement(store, project_id, rid)
+    if requirement["rev"] != expected_rev or requirement.get("answer_version"):
+        raise _conflict()
+    requirement.update(state=states.FAILED, missing="", rev=requirement["rev"] + 1, updated_at=_now(), updated_by=AGENT.oid)
+    try:
+        store.apply(
+            project_id,
+            [ledger_store.replace(requirement), ledger_store.create(new_event(project_id, AGENT, "answer.failed", rid, job_id=job_id))],
+        )
+    except Conflict:
+        raise _conflict() from None
 
 
 def get_state(store: LedgerStore, project_id: str, user: UserClaims, settings: Settings) -> Doc:
@@ -362,8 +382,16 @@ def update_requirement(
             recorded[field] = {"from": requirement.get(field), "to": value}
     if not recorded:
         return _out(requirement)
-    if recorded.get("status", {}).get("to") == "approved" and not requirement.get("answer_version"):
-        raise HTTPException(status_code=409, detail="There is no answer to approve yet")
+    if recorded.get("status", {}).get("to") == "approved":
+        if not requirement.get("answer_version"):
+            raise HTTPException(status_code=409, detail="There is no answer to approve yet")
+        current = requirement.get("state")
+        if current and current not in states.APPROVABLE:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This answer cannot be approved: it is {states.LABELS.get(current, current).lower()}. "
+                "Write or edit the answer first.",
+            )
 
     for field, change in recorded.items():
         requirement[field] = change["to"]
@@ -407,6 +435,16 @@ def _evidence(value: Any) -> list[dict[str, Any]]:
     return kept
 
 
+def _state_of(content: dict[str, Any], answer: dict[str, Any], *, source: str, restored: bool) -> str:
+    """The answer state to record. A person's own text is a full answer; a restored version keeps its state."""
+    given = str(content.get("state") or "")
+    if given in states.STATES and (source == "model" or restored):
+        return given
+    if source != "model":
+        return states.FULLY
+    return states.FULLY if answer.get("meets") == "Yes" else states.PARTIAL
+
+
 def add_answer(
     store: LedgerStore,
     settings: Settings,
@@ -431,6 +469,11 @@ def add_answer(
     version = requirement["answer_version"] + 1
     now = _now()
     answer = normalize_answer(content, require_meets=False)
+    if source != "model" and restored_from is None and states.has_placeholder(answer["answer_markdown"]):
+        raise HTTPException(
+            status_code=422, detail="This answer is still the placeholder. Write the answer, or leave it as it is."
+        )
+    state = _state_of(content, answer, source=source, restored=restored_from is not None)
     document: Doc = {
         "id": _answer_doc_id(rid, version),
         "kind": "answer",
@@ -444,6 +487,8 @@ def add_answer(
         "risks": answer["risks"],
         "followups": answer["followups"],
         "kb_evidence_found": bool(content.get("kb_evidence_found", False)),
+        "state": state,
+        "missing": str(content.get("missing") or "")[:300] if state != states.FULLY else "",
         "source": source,
         "author": actor.oid,
         "author_name": actor.name,
@@ -456,13 +501,15 @@ def add_answer(
     requirement.update(
         answer={k: v for k, v in document.items() if k not in ("id", "kind", "projectId", "rid")},
         answer_version=version,
-        status="drafted" if source == "model" else "edited",
+        status="needs_input" if state in states.PLACEHOLDER_STATES else ("drafted" if source == "model" else "edited"),
+        state=state,
+        missing=document["missing"],
         rev=requirement["rev"] + 1,
         updated_at=now,
         updated_by=actor.oid,
     )
     event = new_event(
-        project_id, actor, "answer.added", rid, version=version, source=source,
+        project_id, actor, "answer.added", rid, version=version, source=source, state=state,
         **({"restored_from": restored_from} if restored_from is not None else {}),
         **({"job_id": job_id} if job_id else {}),
     )
