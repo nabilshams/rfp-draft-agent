@@ -173,7 +173,7 @@ class TestPromptsFenceUntrustedText:
         assert re.search(r"<<<KB-SOURCE:(\w+)\n(?:.|\n)*" + re.escape(ATTACK) + r"(?:.|\n)*\nKB-SOURCE:\1>>>", prompt)
 
     def test_the_question_is_fenced(self, agent, monkeypatch):
-        monkeypatch.setattr(kb_search, "search_kb", lambda **_kw: [])
+        monkeypatch.setattr(kb_search, "search_kb", lambda **_kw: [SOURCE])
         answers.run_single_answer(question=ATTACK, client_id="c", project_id="p", user_oid="u")
         assert re.search(r"<<<QUESTION:(\w+)\n" + re.escape(ATTACK) + r"\nQUESTION:\1>>>", agent.prompts[0])
 

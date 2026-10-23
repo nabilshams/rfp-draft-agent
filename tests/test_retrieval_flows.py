@@ -260,8 +260,8 @@ class TestSingleAnswer:
             {
                 "answer_markdown": f"Yes, [see]({KB_A}) or [here]({FAKE})",
                 "evidence": [
-                    {"title": "E", "source_url": KB_A, "quote": "q"},
-                    {"title": "Bad", "source_url": FAKE, "quote": "q"},
+                    {"title": "E", "source_url": KB_A, "quote": "content of Encryption"},
+                    {"title": "Bad", "source_url": FAKE, "quote": "made up nonsense"},
                 ],
             }
         )
@@ -274,23 +274,47 @@ class TestSingleAnswer:
         assert FAKE not in answer["answer_markdown"]
         assert answer["kb_evidence_found"] is True
 
-    def test_an_answer_without_sources_says_so(self, agent, kb):
-        agent.respond = lambda prompt: json.dumps({"answer_markdown": "Not provided in sources", "evidence": []})
+    def test_a_question_with_nothing_in_the_knowledge_base_is_not_answered_from_thin_air(self, agent, kb):
         answer = self.ask()
-        assert answer["kb_evidence_found"] is False
-        assert "No matching documents were found" in agent.prompts[0]
+        assert answer["kb_evidence_found"] is False and agent.prompts == []
+        assert answer["state"] == "no_evidence" and "SME INPUT REQUIRED" in answer["answer_markdown"]
+        assert "meets" not in answer and "requirement_id" not in answer
+
+    def test_a_reply_that_says_the_sources_do_not_cover_it_is_a_placeholder_not_a_blank(self, agent, kb):
+        kb.docs = {"Do you encrypt data?": [doc("Encryption", KB_A)]}
+        agent.respond = lambda prompt: json.dumps(
+            {"answer_markdown": "", "evidence": [], "sufficiency": "needs_sme", "missing": "the key length"}
+        )
+        answer = self.ask()
+        assert answer["state"] == "needs_sme" and answer["answer_markdown"] == "[SME INPUT REQUIRED: the key length]"
+        assert "sufficiency" not in answer
+
+    def test_a_pricing_question_goes_to_the_commercial_team(self, agent, kb):
+        kb.docs = {"What is your pricing?": [doc("Encryption", KB_A)]}
+        answer = answers.run_single_answer(question="What is your pricing?", **ACCESS)
+        assert agent.prompts == [] and answer["state"] == "needs_commercial"
 
 
 # ── Section narratives ───────────────────────────────────
 
 
-def router(agent):
-    """Answer each kind of prompt the section approaches send."""
+def router(agent, own_sources=False):
+    """Answer each kind of prompt the section approaches send.
+
+    With *own_sources* each requirement cites the document retrieved for it (so both end up answered)."""
 
     def respond(prompt):
         if "Classify each requirement" in prompt:
             return json.dumps({"Executive Summary": ["R1"], "Technical Approach": ["R2"]})
         if "Respond to this single RFP requirement" in prompt:
+            if own_sources:
+                first = "Requirement ID: R1" in prompt
+                url, title = (KB_A, "Encryption") if first else (KB_B, "Support")
+                return answer_json(
+                    "R1" if first else "R2",
+                    text=f"We comply. See [guide]({url}).",
+                    evidence=[{"title": title, "source_url": url, "quote": f"content of {title}"}],
+                )
             return answer_json("R1" if "Requirement ID: R1" in prompt else "R2")
         section = "Executive Summary" if '"Executive Summary" section' in prompt else "Technical Approach"
         return json.dumps(
@@ -318,7 +342,7 @@ class TestSections:
         return [e["data"] for e in events if e["type"] == "section_narrative"]
 
     def test_a_section_is_grounded_on_its_own_requirements_documents(self, agent, kb):
-        router(agent)
+        router(agent, own_sources=True)
 
         self.run(strategies.stream_per_section, kb)
 
@@ -328,7 +352,7 @@ class TestSections:
         assert "content of Support" in by_section["Technical"] and "content of Encryption" not in by_section["Technical"]
 
     def test_narratives_cite_only_their_own_sources(self, agent, kb):
-        router(agent)
+        router(agent, own_sources=True)
 
         narratives = {n["section_name"]: n["narrative_markdown"] for n in self.run(strategies.stream_per_section, kb)}
 

@@ -91,9 +91,9 @@ def stream_per_section(
     """Group requirements by template section and write a narrative per section.
 
     Step 1 — classify requirements into template sections.
-    Step 2 — write a coherent narrative per section.
-    Step 3 — produce compliance matrix entries for all requirements.
-    Yields events: section_map, section_narrative, requirement_started, requirement_compliance.
+    Step 2 — produce compliance matrix entries for all requirements (each gets its answer state).
+    Step 3 — write a coherent narrative per section, from the requirements that were answered.
+    Yields events: section_map, requirement_started, requirement_compliance, section_narrative.
     """
     settings = get_settings()
     agent_id = lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME)
@@ -123,39 +123,9 @@ def stream_per_section(
     yield {"type": "section_map", "data": section_map}
     logger.info("Section mapping: %s", {k: len(v) for k, v in section_map.items()})
 
-    # Step 2: requirements that are routed to people or have nothing to draft from stay out of the narratives
-    router = states.router_from_settings(settings)
-    draftable = {
-        rid
-        for rid, req in req_by_id.items()
-        if rid in index_by_id
-        and states.pre_gate(
-            req, router=router, evidence_found=contexts[index_by_id[rid]].found, web_search=allow_web_search
-        )
-        is None
-    }
-    jobs = []
-    for section_name, req_ids in section_map.items():
-        section_reqs = [req_by_id[rid] for rid in req_ids if rid in draftable]
-        if section_reqs:
-            jobs.append(
-                {
-                    "section_name": section_name,
-                    "req_ids": [r.get("id", "?") for r in section_reqs],
-                    "section_reqs": section_reqs,
-                    "context": section_context(req_ids),
-                    "tone": tone,
-                    "agent_id": agent_id,
-                    "guidance": guidance,
-                }
-            )
-    for section_data in sections.write_sections(
-        jobs, sections.generate_section_narrative, max(1, settings.section_parallelism)
-    ):
-        yield {"type": "section_narrative", "data": section_data}
-
-    # Step 3
+    # Step 2 -- the compliance matrix, which settles each requirement's state before any narrative is written
     logger.info("Generating compliance matrix for %d requirements", len(requirements))
+    settled: dict[str, str] = {}
     for idx, req in enumerate(requirements, start=1):
         yield {
             "type": "requirement_started",
@@ -193,7 +163,30 @@ def stream_per_section(
                     "requirement_id", "meets", "answer_markdown", "evidence", "risks", "generation_failed", "state"
                 )
             }
+        settled[str(data.get("requirement_id", ""))] = str(data.get("state", ""))
         yield {"type": "requirement_compliance", "data": data}
+
+    # Step 3 -- narratives, from the requirements that ended up answered. A placeholder (routed to a person, or
+    # without evidence) or a failure is never woven into prose, so the narrative cannot say what the answer does not.
+    jobs = []
+    for section_name, req_ids in section_map.items():
+        answered_ids = [rid for rid in req_ids if rid in req_by_id and settled.get(str(rid)) in states.APPROVABLE]
+        if answered_ids:
+            jobs.append(
+                {
+                    "section_name": section_name,
+                    "req_ids": answered_ids,
+                    "section_reqs": [req_by_id[rid] for rid in answered_ids],
+                    "context": section_context(answered_ids),
+                    "tone": tone,
+                    "agent_id": agent_id,
+                    "guidance": guidance,
+                }
+            )
+    for section_data in sections.write_sections(
+        jobs, sections.generate_section_narrative, max(1, settings.section_parallelism)
+    ):
+        yield {"type": "section_narrative", "data": section_data}
 
 
 def stream_map_reduce(

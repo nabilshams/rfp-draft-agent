@@ -288,6 +288,11 @@ def _answer_single_requirement(
         )
 
 
+def _free_form(answer: dict[str, Any]) -> dict[str, Any]:
+    """An answer to a free-form question has no requirement and no compliance claim: drop what a requirement carries."""
+    return {k: v for k, v in answer.items() if k not in ("requirement_id", "requirement_text", "meets")}
+
+
 def run_single_answer(
     *,
     question: str,
@@ -314,14 +319,26 @@ def run_single_answer(
         )
     )
 
+    # The same rules as a requirement: pricing and contract questions go to people, and with nothing retrieved
+    # there is nothing to answer from
+    question_as_requirement = {"id": "", "text": question}
+    gated = states.pre_gate(
+        question_as_requirement,
+        router=states.router_from_settings(get_settings()),
+        evidence_found=context.found,
+        web_search=allow_web_search,
+    )
+    if gated is not None:
+        return {**_free_form(gated), "kb_evidence_found": context.found}
+
     agent_id = lifecycle.ensure_agent(lifecycle.QA_AGENT_NAME)
 
     result = runner.run_agent_prompt(
         agent_id,
         (
             f"Answer the following question using ONLY the retrieved sources below.  "
-            f"Return a JSON object with answer_markdown, evidence, assumptions, "
-            f"and followups.\n\n"
+            f"Return a JSON object with answer_markdown, evidence, assumptions, followups, "
+            f"sufficiency (complete, partial, none, needs_sme or conflict) and missing.\n\n"
             f"{context.block}\n\n"
             f"Question:\n{fence('QUESTION', question)}"
         ),
@@ -340,6 +357,11 @@ def run_single_answer(
         )
     except (ValueError, IndexError):
         answer = {"raw_response": kb_search.sanitize_citations(safe_text, allowed_urls), "parse_error": True}
-    if isinstance(answer, dict):
+    if isinstance(answer, dict) and not answer.get("parse_error"):
+        answer["kb_evidence_found"] = context.found
+        answer = _free_form(
+            states.finalize(answer, question_as_requirement, docs=context.docs, web_grounded=bool(result.annotation_urls))
+        )
+    elif isinstance(answer, dict):
         answer["kb_evidence_found"] = context.found
     return answer

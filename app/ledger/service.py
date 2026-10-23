@@ -469,6 +469,10 @@ def add_answer(
     version = requirement["answer_version"] + 1
     now = _now()
     answer = normalize_answer(content, require_meets=False)
+    if source != "model" and restored_from is None and states.has_placeholder(answer["answer_markdown"]):
+        raise HTTPException(
+            status_code=422, detail="This answer is still the placeholder. Write the answer, or leave it as it is."
+        )
     state = _state_of(content, answer, source=source, restored=restored_from is not None)
     document: Doc = {
         "id": _answer_doc_id(rid, version),

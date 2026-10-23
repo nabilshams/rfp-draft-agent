@@ -172,8 +172,12 @@ function editFormHtml(req) {
   const meets = ['Yes', 'Partial', 'No'].map(m =>
     '<option value="' + m + '"' + (answer.meets === m ? ' selected' : '') + '>' + m + '</option>').join('') +
     (answer.answer_markdown && !answer.meets ? '<option value="" selected>Not assessed</option>' : '');
+  // A placeholder is not text to edit: start blank and say what is needed
+  const blank = PLACEHOLDER_STATES.includes(answer.state);
+  const needed = blank && answer.missing
+    ? '<div style="font-size:11px;color:#a4262c;margin-bottom:4px">Needed: ' + esc(answer.missing) + '</div>' : '';
   return '<div class="edit-form" style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#fff">' +
-    '<label>Answer</label><textarea class="edit-text" rows="6">' + esc(answer.answer_markdown || '') + '</textarea>' +
+    '<label>Answer</label>' + needed + '<textarea class="edit-text" rows="6">' + (blank ? '' : esc(answer.answer_markdown || '')) + '</textarea>' +
     '<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><label style="margin:0">Compliance</label>' +
     '<select class="edit-meets" style="width:auto">' + meets + '</select>' +
     '<span style="flex:1"></span>' +

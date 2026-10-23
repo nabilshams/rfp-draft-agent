@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.agents import kb_search
+
 FULLY = "fully_answered"
 PARTIAL = "partially_answered"
 CONFLICTING = "conflicting_evidence"
@@ -191,20 +193,44 @@ def pre_gate(
     return None
 
 
+_TYPOGRAPHY = str.maketrans(
+    {"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00a0": " "}
+)
+_MARKDOWN = re.compile(r"[*_`#>|]")
+_ELLIPSIS = re.compile(r"\u2026|\.\.\.")
+MIN_QUOTE = 10  # shorter quotes prove nothing
+
+
+def _squash(text: Any) -> str:
+    """Text lower-cased with whitespace collapsed, typographic quotes and dashes made plain and markdown marks removed."""
+    plain = _MARKDOWN.sub(" ", str(text or "").translate(_TYPOGRAPHY))
+    return " ".join(plain.lower().split())
+
+
+def _quote_in(quote: Any, content: str) -> bool:
+    """Whether a quote is in a document. A quote with an ellipsis is checked fragment by fragment."""
+    fragments = [f for f in (_squash(p) for p in _ELLIPSIS.split(str(quote or ""))) if len(f) >= MIN_QUOTE]
+    return bool(fragments) and all(f in content for f in fragments)
+
+
 def count_supported_citations(answer: dict[str, Any], docs: list[dict[str, Any]]) -> tuple[int, int]:
-    """(evidence entries, entries whose quote really appears in the retrieved document they cite)."""
+    """(evidence entries, entries whose quote really appears in the retrieved document they cite).
 
-    def squash(text: str) -> str:
-        return " ".join(str(text or "").lower().split())
-
+    Links are compared as the citation check does (percent-encoding, trailing slash, a name cut at a parenthesis).
+    """
+    contents: dict[str, list[str]] = {}
+    for doc in docs:
+        url = kb_search._normalize_url(str(doc.get("source_url", "")))
+        if url:
+            contents.setdefault(url, []).append(_squash(doc.get("content", "")))
     entries = [e for e in answer.get("evidence", []) if isinstance(e, dict)]
     supported = 0
     for entry in entries:
-        quote = squash(entry.get("quote", ""))
-        url = str(entry.get("source_url", "")).rstrip("/")
-        if len(quote) < 10:
-            continue
-        if any(str(d.get("source_url", "")).rstrip("/") == url and quote in squash(d.get("content", "")) for d in docs):
+        url = str(entry.get("source_url", ""))
+        if any(
+            kb_search._is_allowed(url, {known}) and any(_quote_in(entry.get("quote", ""), text) for text in texts)
+            for known, texts in contents.items()
+        ):
             supported += 1
     return len(entries), supported
 
@@ -232,10 +258,12 @@ def finalize(
     _, supported = count_supported_citations(answer, docs)
     grounded = supported > 0 or web_grounded
 
-    if hint == NO_EVIDENCE or _ABSTAIN_START.search(text) or not grounded:
+    if hint == NO_EVIDENCE or _ABSTAIN_START.search(text):
         state = NO_EVIDENCE
     elif hint == NEEDS_SME:
         state = NEEDS_SME
+    elif not grounded:
+        state = NO_EVIDENCE
     elif hint == CONFLICTING:
         state = CONFLICTING
     elif hint == PARTIAL or str(answer.get("meets", "")) == "Partial" or _ABSTAIN_ANYWHERE.search(text):

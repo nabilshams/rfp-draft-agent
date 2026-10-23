@@ -536,3 +536,81 @@ def test_a_model_answer_without_a_report_is_still_judged_by_its_citations():
     plain = {k: v for k, v in answer_of().items() if k not in ("sufficiency", "missing")}
     assert states.finalize(plain, REQ, docs=[SOURCE])["state"] == states.FULLY
     assert service.STATUSES[-1] == "needs_input"
+
+class TestCitationCheckIsAsTolerantAsTheCitationSanitiser:
+    """A correct citation must not be thrown away because of formatting (these were found in review)."""
+
+    def supported(self, entry, content="Data is encrypted at rest with AES-256 and keys are rotated every 90 days.",
+                  url="https://kb/My%20Policy.pdf"):
+        count = states.count_supported_citations({"evidence": [entry]}, [{"source_url": url, "content": content}])
+        return count == (1, 1)
+
+    def test_a_percent_encoded_link_matches_its_decoded_form(self):
+        assert self.supported({"source_url": "https://kb/My Policy.pdf", "quote": "Data is encrypted at rest"})
+
+    def test_a_trailing_slash_is_ignored(self):
+        assert self.supported({"source_url": "https://kb/My%20Policy.pdf/", "quote": "Data is encrypted at rest"})
+
+    def test_typographic_quotes_markdown_and_case_do_not_matter(self):
+        content = "The vendor\u2019s policy: **Data is encrypted** at rest."
+        assert self.supported({"source_url": "https://kb/My%20Policy.pdf", "quote": "the vendor's policy: data is encrypted at rest"}, content)
+
+    def test_an_ellipsis_quote_is_checked_in_pieces(self):
+        assert self.supported({"source_url": "https://kb/My%20Policy.pdf",
+                               "quote": "Data is encrypted at rest \u2026 keys are rotated every 90 days"})
+        assert not self.supported({"source_url": "https://kb/My%20Policy.pdf",
+                                   "quote": "Data is encrypted at rest \u2026 and never leaves Australia"})
+
+    def test_a_quote_that_is_not_in_the_document_or_is_too_short_proves_nothing(self):
+        assert not self.supported({"source_url": "https://kb/My%20Policy.pdf", "quote": "We encrypt everything twice"})
+        assert not self.supported({"source_url": "https://kb/My%20Policy.pdf", "quote": "AES-256"})
+
+    def test_a_link_to_another_document_proves_nothing(self):
+        assert not self.supported({"source_url": "https://kb/other.pdf", "quote": "Data is encrypted at rest"})
+
+
+class TestPersonsAnswers:
+    async def test_a_placeholder_cannot_be_saved_as_an_answer(self, api, worker, script):  # noqa: F811
+        script.hooks["R1"] = lambda r: placeholder_reply({"id": "R1", "text": r["text"]})
+        project = await make_project(api)
+        await draft(api, worker, project)
+        placeholder = (await state_of(api, project))["requirements"][0]["answer"]["answer_markdown"]
+
+        refused = await api.post(url(project, "requirements/R1/answers"), json={"answer_markdown": placeholder}, headers=A)
+
+        assert refused.status_code == 422 and "placeholder" in refused.json()["detail"]
+        assert (await api.get(url(project, "requirements/R1"), headers=A)).json()["status"] == "needs_input"
+
+    def test_the_edit_form_for_a_placeholder_starts_blank_and_says_what_is_needed(self):
+        from .test_ui_projects import render, requirement
+
+        placeholder = {"answer_markdown": states.placeholder(states.NO_EVIDENCE, "a reference"), "meets": "",
+                       "state": "no_evidence", "missing": "a reference"}
+        html = render("r.editFormHtml(" + json.dumps(requirement(answer=placeholder, answer_version=1)) + ")")
+        assert "Needed: a reference" in html and "SME INPUT REQUIRED" not in html
+        assert '<textarea class="edit-text" rows="6"></textarea>' in html
+
+
+class TestSectionNarrativesFollowTheFinalState:
+    def test_a_requirement_the_model_finds_unanswerable_is_left_out_of_its_section_narrative(self, agent, kb):  # noqa: F811
+        # Retrieval finds something for R2, so it passes the pre-gate, but the model reports no coverage
+        kb.docs = {"data is encrypted at rest": [SOURCE], "Describe the roadmap": [SOURCE]}
+
+        def respond(prompt):
+            if "Classify each requirement" in prompt:
+                return json.dumps({"Overview": ["R1", "R2"]})
+            if "Respond to this single RFP requirement" in prompt:
+                if "Requirement ID: R2" in prompt:
+                    return json.dumps(answer_of(requirement_id="R2", sufficiency="none", evidence=[], missing="the roadmap"))
+                return json.dumps(answer_of())
+            return json.dumps({"section_name": "Overview", "narrative_markdown": "Narrative.", "requirement_ids": []})
+
+        agent.respond = respond
+        events = list(strategies.stream_per_section(
+            requirements=[{"id": "R1", "text": "data is encrypted at rest"}, {"id": "R2", "text": "Describe the roadmap"}],
+            template_sections=[{"heading": "Overview"}], tone="professional", **ACCESS))
+
+        narrative_prompt = next(p for p in agent.prompts if "section of" in p)
+        assert "Describe the roadmap" not in narrative_prompt
+        assert [e["type"] for e in events][-1] == "section_narrative"
+        assert next(e["data"] for e in events if e["type"] == "section_narrative")["requirement_ids"] == ["R1"]
