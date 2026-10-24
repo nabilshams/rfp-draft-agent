@@ -94,7 +94,7 @@ def _failed_section(section_name: str, req_ids: list[str], status: str) -> dict[
     }
 
 
-def _parse_section(
+def parse_section(
     text: str, *, section_name: str, req_ids: list[str], allowed_urls: set[str], sources: str
 ) -> dict[str, Any]:
     """The section the model wrote, with citations to unretrieved URLs and figures missing from *sources* removed."""
@@ -114,7 +114,7 @@ def _parse_section(
 
 
 # What a narrative writer is told, whatever it is writing from.
-_GROUNDING_RULES = (
+GROUNDING_RULES = (
     "Rules for this section:\n"
     "- State only facts that appear in the material provided below. Cite each factual claim as "
     "[title](source_url), using only URLs from the sources.\n"
@@ -150,7 +150,7 @@ def generate_section_narrative(
             f"Write a coherent, professional narrative (not a list of individual answers). "
             f"Weave the requirements naturally into the narrative. "
             f"Reference requirement IDs in brackets where relevant, e.g. [F1].\n\n"
-            f"{_GROUNDING_RULES}"
+            f"{GROUNDING_RULES}"
             f"Use these sources for grounding:\n{context.block}\n\n"
             f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
@@ -164,7 +164,7 @@ def generate_section_narrative(
 
     safe, _ = runner.post_generation_guard(result.text)
     given = "\n".join([context.text, *(str(r.get("text", "")) for r in section_reqs), guidance])
-    return _parse_section(
+    return parse_section(
         safe,
         section_name=section_name,
         req_ids=req_ids,
@@ -203,7 +203,7 @@ def generate_section_narrative_from_answers(
             f"individual answers. Weave them together naturally. Reference requirement IDs "
             f"in brackets where relevant, e.g. [F1].\n\n"
             f"Keep all factual claims from the original answers. Do not add new information.\n\n"
-            f"{_GROUNDING_RULES}"
+            f"{GROUNDING_RULES}"
             f"--- Answers for this section ---\n\n{answers_digest}\n\n"
             f"{guidance_block(guidance)}"
             f"Return ONLY a JSON object:\n"
@@ -226,7 +226,7 @@ def generate_section_narrative_from_answers(
         ]
     )
     # The answers were already checked; the narrative may cite only what they cite.
-    return _parse_section(
+    return parse_section(
         safe,
         section_name=section_name,
         req_ids=req_ids,

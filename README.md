@@ -118,7 +118,7 @@ cp .env.example .env
 | `CONFIDENCE_FRESH_DAYS` / `CONFIDENCE_STALE_DAYS` | Age of the sources a claim rests on: newer than the first is fresh (default `730`), older than it caps the band at Medium, older than the second (default `1825`) at Low |
 | `CONFIDENCE_HIGH_SUPPORT` / `CONFIDENCE_LOW_SUPPORT` | Share of an answer's claims the verifier found supported: High needs at least the first (default `0.9`); below the second (default `0.6`) is Low |
 | `CONFIDENCE_TOP_RANK` / `CONFIDENCE_MIN_RELATIVE_SCORE` | A cited source should rank within the top N matches (default `3`) and score at least this share of the best match (default `0.5`), or the band stops at Medium |
-| `EXTRACTION_CHUNK_CHARS` / `EXTRACTION_OVERLAP_CHARS` / `EXTRACTION_MAX_CHUNKS` | How the model-based extractor reads an RFP: part size (default `6000`), how much each part repeats of the one before (`400`), and the most parts it will read (`40`; a longer document is refused, not cut) |
+| `EXTRACTION_CHUNK_CHARS` / `EXTRACTION_OVERLAP_CHARS` / `EXTRACTION_MAX_CHUNKS` | How the model-based extractor reads an RFP: part size (default `6000`), how much each part repeats of the one before (`400`), and the most parts it will read (`10`, about 60,000 characters; parts are read one after another at about 15 s each and a request ends at 240 s, so a longer document is refused, not cut) |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything, so a requirement is only treated as having no evidence when the search returns nothing; the model and the citation check catch the rest) |
 | `ROUTE_COMMERCIAL_TERMS` / `ROUTE_LEGAL_TERMS` | Requirements about pricing or contract terms are never drafted: they become a placeholder for the commercial or legal team (see [Answer states](#answer-states-and-never-invent)). Terms are separated by `;`; `price*` matches any word starting with `price`, other terms match whole words and phrases, and a requirement's category and section are read too. Defaults cover price, cost, fees, discounts, payment, quotes and budgets, and liability, indemnity, warranty, governing law, IP, insurance and termination. An empty list turns routing off |
@@ -253,7 +253,7 @@ kept) and `warnings`.
 
 - **All of the document is read.** The redacted text is cut into overlapping parts (`EXTRACTION_CHUNK_CHARS`, default
   6000, overlapping by `EXTRACTION_OVERLAP_CHARS`) and *every* part is read. A document needing more than
-  `EXTRACTION_MAX_CHUNKS` (40) parts is refused with 413, never cut; a part the model cannot read fails the request
+  `EXTRACTION_MAX_CHUNKS` (10) parts is refused with 413, never cut; a part the model cannot read fails the request
   with 502 after one retry, never leaving a hole. (The old version read the first 12,000 characters.)
 - **Nothing is invented.** Each item carries a verbatim quote from the document, and an item whose quote is not found
   in it is dropped and counted in `warnings`. A stated item's text *is* its quote; an implicit item keeps the model's
@@ -296,6 +296,13 @@ curl -X POST http://localhost:8000/draft \
   "elapsed_seconds": 42.3
 }
 ```
+
+### `POST /draft/generate-section`
+Write one section of a template from the answers already drafted (`responses`). Only answers that can be used
+(fully or partially answered) are passed to the model; placeholders and failed answers are left out. Invented
+figures are removed, and links other than those the answers cite are stripped. The reply has `grounded: false` and a
+`warning` when no answer was usable, meaning the text rests only on the prompt and the RFP's own wording; the web
+page asks for confirmation before generating every section in that case.
 
 ### `POST /drafts`
 Start a draft in the background (the body is the same as `/draft/stream`, with optional `requirements`, `approach`,

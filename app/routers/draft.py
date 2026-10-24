@@ -11,8 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app import azure_clients, metrics
-from app.agents import answers, lifecycle, runner, sections
-from app.agents.normalize import normalize_section
+from app.agents import answers, kb_search, lifecycle, runner, sections, states
 from app.agents.untrusted import fence
 from app.auth.access import require_rfp_access
 from app.auth.entra import UserClaims, get_current_user
@@ -126,20 +125,26 @@ def generate_section(req: GenerateSectionRequest, user: UserClaims = Depends(get
     """Generate content for a single template section using the provided prompt and responses."""
     agent_id = lifecycle.ensure_agent(lifecycle.DRAFT_AGENT_NAME)
 
+    # Only answers that are answers are material for prose: a placeholder for a person, or a failure, is not (the
+    # same rule as the other section approaches). A response with no state is from before states existed.
+    usable = [r for r in req.responses if isinstance(r, dict) and r.get("state") in (None, "", *states.APPROVABLE)]
+
     responses_context = ""
-    if req.responses:
+    if usable:
         responses_context = "\n\n--- Requirement Responses (use these as source material) ---\n\n" + fence(
             "RESPONSES",
             "\n\n".join(
                 f"### [{r.get('requirement_id', '?')}] (Compliance: {r.get('meets', '?')})\n"
                 f"Requirement: {r.get('requirement_text', '')[:200]}\n"
                 f"Response: {r.get('answer_markdown', '')}"
-                for r in req.responses
+                for r in usable
             ),
         )
 
     full_prompt = (
         req.prompt
+        + "\n\n"
+        + sections.GROUNDING_RULES
         + responses_context
         + (
             f"\n\nReturn ONLY a JSON object:\n"
@@ -153,10 +158,30 @@ def generate_section(req: GenerateSectionRequest, user: UserClaims = Depends(get
         raise HTTPException(status_code=502, detail=f"Section generation failed: {agent_result.status}")
 
     safe, _ = runner.post_generation_guard(agent_result.text)
-    try:
-        return normalize_section(runner.parse_json_object(safe), section_name=req.section_name)
-    except (ValueError, IndexError):
-        return {"section_name": req.section_name, "narrative_markdown": safe}
+    # What the writer was given: the prompt (the person's own words and the RFP's) and the answers. Figures anywhere
+    # else are inventions and are removed; links may only be to what the answers cite.
+    given = "\n".join(
+        [req.prompt]
+        + [
+            f"{r.get('requirement_text', '')[:200]}\n{r.get('answer_markdown', '')}\n"
+            + "\n".join(str(e.get("quote", "")) for e in r.get("evidence", []) if isinstance(e, dict))
+            for r in usable
+        ]
+    )
+    section = sections.parse_section(
+        safe,
+        section_name=req.section_name,
+        req_ids=[str(r.get("requirement_id", "")) for r in usable],
+        allowed_urls=kb_search.cited_urls(usable),
+        sources=given,
+    )
+    section["grounded"] = bool(usable)
+    if not usable:
+        section["warning"] = (
+            "No answered requirement was available, so this text rests only on your prompt and the RFP's own wording, "
+            "not on your knowledge base. Draft the requirements first, then generate the sections."
+        )
+    return section
 
 
 @router.post("/draft/generate-doc", dependencies=[Depends(rate_limited)])

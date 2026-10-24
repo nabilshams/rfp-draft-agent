@@ -685,14 +685,17 @@ async function generateSection(index) {
     if (existing >= 0) generatedSectionNarratives[existing] = payload; else generatedSectionNarratives.push(payload);
     updateDocGenStatus();
     $('tpl-response-' + index).style.display = 'block';
-    $('tpl-response-text-' + index).textContent = text;
-    toast('Section "' + section.heading + '" generated.');
+    $('tpl-response-text-' + index).textContent = (data.warning ? '\u26A0 ' + data.warning + '\n\n' : '') + text;
+    toast('Section "' + section.heading + '" generated.', data.warning ? 'error' : undefined);
   } catch (err) {
     toast('Failed: ' + err.message, 'error');
   } finally { loading.classList.remove('visible'); }
 }
 
 async function generateAllSections() {
+  if (!generatedResponses.length && !confirm(
+    'No requirement has an answer yet, so every section would be written from your prompt alone, without your knowledge base. ' +
+    'Draft the requirements first for grounded sections.\n\nGenerate the sections anyway?')) return;
   for (let i = 0; i < templateSectionsData.length; i++) await generateSection(i);
   toast('All sections generated!');
 }

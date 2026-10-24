@@ -13,7 +13,7 @@ from .test_authorization_api import A, upload_rfp
 from .test_draft_endpoints import agent  # noqa: F401  (a fixture)
 from .test_extraction_fidelity import add_table, make_docx
 
-SETTINGS = Settings(_env_file=None, extraction_chunk_chars=1500, extraction_overlap_chars=300)
+SETTINGS = Settings(_env_file=None, extraction_chunk_chars=1500, extraction_overlap_chars=300, extraction_max_chunks=40)
 FENCE = re.compile(r"<<<RFP-DOCUMENT:(\w+)\n(.*?)\nRFP-DOCUMENT:\1>>>", re.S)
 
 
