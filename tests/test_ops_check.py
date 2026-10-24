@@ -21,7 +21,7 @@ class TestProjectReport:
         text = "\n".join(lines)
         assert "PROJECT name='Harbourview bid'" in text and "requirement_count=5" in text
         assert "'instruction': 1" in text and "'deadline': 1" in text and "repeats=1" in text and "answered=0" in text
-        assert "R3       mandatory" in text and "EVENTS project.created" in text
+        assert "R3       mandatory" in text and "EVENTS" in text and "project.created" in text
 
     async def test_it_never_prints_an_answer_and_cuts_a_long_requirement(self, api):  # noqa: F811
         project = await make_project(api, requirements=[{"id": "R1", "text": "The vendor shall " + "x" * 300}])
@@ -112,3 +112,19 @@ class TestCommand:
     def test_a_project_report_needs_a_ledger(self, monkeypatch, capsys):
         monkeypatch.setattr(check.ledger_store, "store_for", lambda _s: None)
         assert check.main(["project", "abc"]) == 1
+
+class TestEventDetails:
+    def test_a_choice_is_shown_as_from_and_to_but_text_is_only_named(self):
+        event = {"details": {"changes": {"item_kind": {"from": "instruction", "to": "question"}, "text": {"from": "secret a", "to": "secret b"}}}}
+        shown = check._what_changed(event)
+        assert "item_kind: 'instruction' -> 'question'" in shown and "text (changed)" in shown
+        assert "secret" not in shown
+
+    def test_an_event_without_changes_adds_nothing(self):
+        assert check._what_changed({"details": {}}) == "" and check._what_changed({}) == ""
+
+    def test_the_output_is_ascii_whatever_the_console(self, monkeypatch, capsys):
+        monkeypatch.setattr(check, "project_report", lambda *_: ["anchor \u00b67"])
+        monkeypatch.setattr(check.ledger_store, "store_for", lambda _s: object())
+        assert check.main(["project", "abc"]) == 0
+        assert "anchor \\xb67" in capsys.readouterr().out

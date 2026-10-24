@@ -56,8 +56,23 @@ def project_report(store: LedgerStore, project_id: str) -> list[str]:
             f"| {' '.join(str(r['text']).split())[:LABEL]}"
         )
     events = store.query(project_id, "event", order_by="at")
-    lines.append("EVENTS " + ", ".join(f"{e['action']}{'/' + e['rid'] if e.get('rid') else ''}" for e in events))
+    lines.append("EVENTS")
+    lines += [f"  {e['at'][:19]} {e['action']}{'/' + e['rid'] if e.get('rid') else ''}{_what_changed(e)}" for e in events]
     return lines
+
+
+# Fields whose values are a choice from a short list: shown. Any other (text, names) is named but never shown.
+_SHOWN = ("item_kind", "response_type", "evidence_required", "duplicate_of", "status", "priority")
+
+
+def _what_changed(event: dict) -> str:
+    changes = (event.get("details") or {}).get("changes") or {}
+    parts = [
+        f"{field}: {c.get('from')!r} -> {c.get('to')!r}" if field in _SHOWN else f"{field} (changed)"
+        for field, c in changes.items()
+        if isinstance(c, dict)
+    ]
+    return "  [" + "; ".join(parts) + "]" if parts else ""
 
 
 def index_report(settings: Settings) -> list[str]:
@@ -131,7 +146,8 @@ def main(argv: list[str]) -> int:
     else:
         print(__doc__)
         return 2
-    print("\n".join(out))
+    # Whatever the console's encoding, never fail on (or garble) a character
+    print("\n".join(out).encode("ascii", "backslashreplace").decode("ascii"))
     return 0
 
 

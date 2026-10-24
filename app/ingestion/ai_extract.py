@@ -255,7 +255,8 @@ def extract(filename: str, data: bytes, settings: Settings) -> RFPExtractionResu
     if len(chunks) > settings.extraction_max_chunks:
         raise DocumentTooLong(
             f"This document needs {len(chunks)} parts to read and at most {settings.extraction_max_chunks} are allowed "
-            f"(EXTRACTION_MAX_CHUNKS). Split it, or use the pattern-based extraction."
+            f"(EXTRACTION_MAX_CHUNKS): reading takes about 15 seconds a part and a request ends after 240. "
+            f"Split the document, or use the pattern-based extraction."
         )
     where = _Normalised(document)
     listed = 0
