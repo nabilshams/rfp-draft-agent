@@ -168,9 +168,19 @@ class ParsedDocument:
     structure_text: str = ""
     anchors: list[tuple[int, str]] = field(default_factory=list)
     table_rows: list[tuple[int, Requirement]] = field(default_factory=list)
+    # The same for ``text`` (which keeps the requirement tables); ``None`` means ``text`` is ``structure_text``
+    text_anchors: list[tuple[int, str]] | None = None
 
     def __post_init__(self) -> None:
         self._offsets = [offset for offset, _ in self.anchors]
+        spans = self.anchors if self.text_anchors is None else self.text_anchors
+        self._text_offsets = [offset for offset, _ in spans]
+        self._text_spans = spans
+
+    def text_anchor_at(self, offset: int) -> str:
+        """Where an offset into ``text`` is in the document: "p. 3", "¶12", "Table 2, row 5"."""
+        index = bisect_right(self._text_offsets, offset) - 1
+        return self._text_spans[index][1] if index >= 0 else ""
 
     @classmethod
     def from_text(cls, text: str) -> ParsedDocument:
@@ -249,6 +259,7 @@ def parse_docx(data: bytes) -> ParsedDocument:
     structure = _TextBuilder()
     anchors: list[tuple[int, str]] = []
     table_rows: list[tuple[int, Requirement]] = []
+    text_anchors: list[tuple[int, str]] = []
     paragraph_number = 0
     table_number = 0
 
@@ -259,7 +270,7 @@ def parse_docx(data: bytes) -> ParsedDocument:
             if not text:
                 continue
             paragraph_number += 1
-            full.add(text)
+            text_anchors.append((full.add(text), f"¶{paragraph_number}"))
             anchors.append((structure.add(text), f"¶{paragraph_number}"))
         elif kind == "tbl":
             table_number += 1
@@ -270,7 +281,7 @@ def parse_docx(data: bytes) -> ParsedDocument:
             for row_number, row in enumerate(rows, start=1):
                 line = " | ".join(cell for cell in row if cell)
                 if line:
-                    full.add(line)
+                    text_anchors.append((full.add(line), f"Table {table_number}, row {row_number}"))
                     if columns is None:
                         anchors.append((structure.add(line), f"Table {table_number}, row {row_number}"))
             if columns is not None:
@@ -282,7 +293,8 @@ def parse_docx(data: bytes) -> ParsedDocument:
                 table_rows.extend((offset, requirement) for requirement in found)
 
     return ParsedDocument(
-        text=full.text(), structure_text=structure.text(), anchors=anchors, table_rows=table_rows
+        text=full.text(), structure_text=structure.text(), anchors=anchors, table_rows=table_rows,
+        text_anchors=text_anchors,
     )
 
 

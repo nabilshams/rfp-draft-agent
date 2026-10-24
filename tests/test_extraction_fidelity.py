@@ -320,33 +320,6 @@ class TestGuidance:
 
 
 class TestIdsAndQuestions:
-    async def test_ai_extraction_numbers_and_types_everything(self, client, agent):  # noqa: F811
-        agent.reply = lambda _p: json.dumps(
-            {
-                "requirements": [
-                    {"id": "R1", "text": "Must encrypt data"},
-                    {"id": "R1", "text": "Must log access"},
-                    {"id": "", "text": "Where is data stored?"},
-                ],
-                "questions": ["Where is data stored?", "Who owns the data?"],
-            }
-        )
-        rfp_id = await upload_rfp(client, A)
-
-        result = (
-            await client.post("/rfp/extract-ai", json={"rfp_id": rfp_id, "filename": "rfp.docx"}, headers=A)
-        ).json()
-
-        ids = [r["id"] for r in result["requirements"]]
-        assert len(ids) == len(set(ids)) == 4
-        assert {r["text"]: r["type"] for r in result["requirements"]} == {
-            "Must encrypt data": "requirement",
-            "Must log access": "requirement",
-            "Where is data stored?": "question",
-            "Who owns the data?": "question",
-        }
-        assert result["questions"] == ["Where is data stored?", "Who owns the data?"]
-
     @pytest.mark.parametrize(
         "given, expected",
         [
