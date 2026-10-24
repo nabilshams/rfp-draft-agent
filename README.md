@@ -786,7 +786,7 @@ These are judged **claim by claim**: an answer is only as strong as its weakest 
 five-year-old proposal lowers the band even when another claim cites a current policy. Each rule that applies adds a
 reason that lowers the band to Medium or Low, or one that supports it; the band is the lowest any reason allows, so
 changing one input (removing a source, an older date) changes the band in a way you can read off the reasons. Claims
-that were not checked (verification off, a web-only source, or a verifier outage) cap it at Medium. Placeholders and
+that were not checked (verification off, a web-only source, or a verifier outage) cap it at Medium; the share of supported claims is taken over the claims that were judged. Placeholders and
 failures are Low (there is no answer to trust); text a person wrote has no band. Similarity to an approved answer
 becomes an input when the answer library exists (#38). Thresholds are configuration, never code.
 
@@ -794,10 +794,15 @@ becomes an input when the answer library exists (#38). Thresholds are configurat
 band, the model's latest answers that were approved as drafted, edited by a person, or are still pending, and the edit
 rate: a calibrated band has a falling edit rate as it rises. On the golden set (`evals/baseline.md`) the evaluation
 reports the same split, using what a person would have to change (a wrong fact, a wrong compliance value, an invented
-figure, answering what it should not) and never the verifier's verdicts, which the band is made from. Across the
-baseline and the degraded variant the Low band needs a change 9% of the time and the High band never; the golden
-set has few wrong answers, so this shows the order is right, not how well the bands are tuned. That needs real review
-outcomes, which the endpoint collects as your team works.
+figure, answering what it should not) and never the verifier's verdicts, which the band is made from. On the 32
+injected answers of the verifier's evaluation (16 deliberately wrong, 16 right, decided in advance) every High-band
+answer is right and every Low-band answer is wrong: 0% against 100%. That shows the band follows the evidence and the
+verifier's verdicts; it is also only as good as the verifier, and a replay with a verifier that approves everything
+drops it sharply. The model's own recorded answers on the three golden RFPs contain no answer that fails the golden
+checks (the verifier's finer flags are the band's input, so they cannot also be its label), so they cannot
+calibrate it and their edit rates are all 0. How well the bands are tuned for your content needs real review outcomes,
+which the endpoint collects as your team works. The evaluation's clock is pinned (`AS_OF`) so source ages do not drift
+under the committed baseline.
 
 **Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
 a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated

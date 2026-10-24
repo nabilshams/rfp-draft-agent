@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from app.agents import confidence, states, strategies, verify
 from app.config import Settings
 from app.evalkit import metrics, report
+from app.evalkit.golden import GOLDEN_DIR
 from app.evalkit.run import run_golden
 from app.ledger import service
 from app.outputs.docx_writer import generate_docx
@@ -255,7 +256,7 @@ class TestNothingTheModelSaysIsAnInput:
             "sources", "unfound_quotes", "unverifiable_sources", "authoritative", "reviewed_answer", "claims_on_weak_sources",
             "claims_on_one_source", "corroborated_claims", "oldest_claim_age_days", "undated_claims", "verification",
             "claims", "supported_fraction", "flagged_claims", "contradicted_claims", "conflict", "partial",
-            "best_cited_rank", "best_cited_relative_score",
+            "best_cited_rank", "best_cited_relative_score", "unchecked_claims",
         }
 
     def test_there_is_no_percentage_in_the_output(self):
@@ -514,16 +515,43 @@ class TestGoldenSet:
         placeholders = [s for s in answered if s.state in states.PLACEHOLDER_STATES]
         assert placeholders and {s.confidence for s in placeholders} == {"low"}
 
-    def test_the_low_band_needs_more_changes_than_the_high_band(self, runs):
-        pooled = metrics.confidence_metrics([s for r in runs.values() for s in r.scores if s.answered])
-        assert pooled["confidence_high_answers"] >= 10 and pooled["confidence_low_answers"] >= 5
-        assert pooled["confidence_low_edit_rate"] > pooled["confidence_high_edit_rate"]
-        assert pooled["confidence_separation"] > 0
+    def test_the_low_band_is_wrong_more_often_than_the_high_band_on_answers_whose_truth_was_decided_in_advance(self, runs):
+        # The injected set: 16 deliberately wrong claims and 16 right ones, labelled before any verifier saw them
+        m = runs["baseline"].metrics
+        assert m["injected_high_band_answers"] >= 10 and m["injected_low_band_answers"] >= 10
+        assert m["injected_low_band_wrong_rate"] > m["injected_high_band_wrong_rate"]
+        assert m["injected_high_band_wrong_rate"] == 0.0 and m["injected_confidence_separation"] >= 0.9
+        assert {o.band for o in runs["baseline"].injections if o.expect == "right"} == {"high"}
+        assert {o.band for o in runs["baseline"].injections if o.expect == "wrong"} == {"low"}
 
-    def test_the_degraded_model_s_answers_are_the_ones_that_land_in_low(self, runs):
-        assert runs["degraded"].metrics["confidence_separation"] > 0
-        assert runs["degraded"].metrics["confidence_low_edit_rate"] > runs["degraded"].metrics["confidence_high_edit_rate"]
+    def test_the_recorded_answers_of_the_golden_rfps_contain_no_wrong_answer_so_they_cannot_calibrate_the_band(self, runs):
+        # Said plainly: every answer the model gave on the three RFPs passes the golden checks (the verifier's finer
+        # flags are not labels, they are the band's input), so the edit rates here are all 0
+        m = runs["baseline"].metrics
+        assert m["confidence_high_answers"] >= 5 and m["confidence_low_answers"] >= 3
+        assert m["confidence_high_edit_rate"] == 0.0 and m["confidence_low_edit_rate"] == 0.0
 
+    def test_a_verifier_that_approves_everything_collapses_the_separation(self, tmp_path):
+        import shutil
+
+        golden = tmp_path / "golden"
+        shutil.copytree(GOLDEN_DIR, golden)
+        path = golden / "recordings" / "baseline" / "injections.json"
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        for record in recorded.values():
+            record["text"] = json.dumps({"verdicts": [{"id": "C1", "verdict": "supported", "reason": "ok"}]})
+        path.write_text(json.dumps(recorded), encoding="utf-8")
+
+        lax = run_golden(mode="replay", variant="baseline", golden_dir=golden)
+
+        # The rules still catch the claims they can without a model, so it does not fall to zero, but it falls well short
+        assert lax.metrics["injected_confidence_separation"] < 0.7
+        assert lax.metrics["injected_high_band_wrong_rate"] > 0.3
+
+    def test_the_golden_clock_is_pinned_so_ages_do_not_drift(self, runs):
+        from app.evalkit.run import AS_OF
+
+        assert AS_OF == date(2026, 10, 1)
     def test_a_stale_historical_source_cited_for_a_claim_is_what_makes_a_golden_answer_low(self, runs):
         rt05 = next(s for s in runs["baseline"].scores if s.id == "RT-05")
         assert rt05.confidence == "low" and any("years old" in r for r in rt05.confidence_reasons)
@@ -548,3 +576,53 @@ class TestGoldenSet:
             spec = json.load(handle)
         rt05 = next(r for r in spec["requirements"] if r["id"] == "RT-05")
         assert ["14 weeks", "14-week"] in rt05["contains_any"]
+
+# ── Found in review ──────────────────────────────────────
+
+
+class TestUncheckedIsNotUnsupported:
+    def unchecked(self, claims=2):
+        return {"status": "unchecked", "claims": claims, "supported": 0, "partial": 0, "unsupported": 0, "contradicted": 0,
+                "unchecked": claims, "by_rule": 0}
+
+    def test_claims_nobody_judged_cap_the_band_at_medium_not_low(self):
+        result = assess(good(verification=self.unchecked()))
+        assert result["band"] == "medium" and codes(result) == ["unchecked"]
+        assert result["features"]["supported_fraction"] is None and result["features"]["unchecked_claims"] == 2
+
+    def test_a_web_only_claim_beside_a_supported_one_does_not_make_the_answer_low(self):
+        mixed = {"status": "partially_verified", "claims": 2, "supported": 1, "partial": 0, "unsupported": 0,
+                 "contradicted": 0, "unchecked": 1, "by_rule": 0}
+        result = assess(good(verification=mixed))
+        assert result["band"] == "medium" and codes(result) == ["partly_unchecked"]
+        assert result["features"]["supported_fraction"] == 1.0  # of the claims that were judged
+
+    def test_the_share_is_still_taken_over_what_was_judged(self):
+        judged = {"status": "partially_verified", "claims": 4, "supported": 1, "partial": 1, "unsupported": 0,
+                  "contradicted": 0, "unchecked": 2, "by_rule": 0}
+        assert "few_claims_supported" in codes(assess(good(verification=judged)))  # 1 of 2 judged is 50%
+
+
+class TestCalibrationOfSetAsideAnswers:
+    async def test_bringing_back_an_older_model_version_sets_the_latest_one_aside(self, api, worker, script):  # noqa: F811
+        script.hooks["R1"] = lambda r: reply(r, "low", "fully_answered")
+        project = await make_project(api)
+        await draft(api, worker, project)
+        script.hooks["R1"] = lambda r: reply(r, "high", "fully_answered")
+        await draft(api, worker, project, body={"rids": ["R1"]})  # v2: High
+        await api.post(url(project, "requirements/R1/answers"), json={"restore_version": 1}, headers=A)  # v3
+        await api.patch(url(project, "requirements/R1"), json={"status": "approved"}, headers=A)
+
+        bands = (await api.get(url(project, "calibration"), headers=A)).json()["bands"]
+
+        assert bands["high"]["edited"] == 1 and bands["high"]["pending"] == 0 and bands["high"]["edit_rate"] == 1.0
+
+
+class TestTheEvaluationLabelIsNotMadeOfTheBandsInputs:
+    def test_an_invented_figure_alone_does_not_make_an_answer_need_a_change(self):
+        score = metrics.score_requirement(
+            case="c", expected={"id": "x", "text": "t", "supported": True}, extracted=True, docs=[],
+            answer={"answer_markdown": "Fine.", "state": "fully_answered", "meets": "Yes", "evidence": []},
+            raw_text="We cut costs by 40%.", sources="", retrieval_rank=None, latency_s=None, usage=None,
+        )
+        assert score.unsupported_raw == ["40%"] and score.needs_edit is False

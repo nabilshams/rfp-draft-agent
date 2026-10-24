@@ -42,6 +42,11 @@ _WEAK_STATUSES = ("superseded", "draft")  # a source in one of these is not reli
 MAX_REASONS = 10
 
 
+def _now_date() -> date:
+    """Today. A function so the evaluation can pin it: source ages must not drift under a committed baseline."""
+    return datetime.now(UTC).date()
+
+
 def _reason(code: str, effect: str, text: str, level: str = HIGH) -> dict[str, str]:
     """``effect`` is ``lowers`` (the reason caps the band at *level*) or ``supports`` (it argues for the band)."""
     return {"code": code, "effect": effect, "level": level, "text": text}
@@ -120,6 +125,9 @@ def features(
     alone = [g for g in groups if g not in weak and urls(g) == 1 and not any(is_strong(e) for e in g)]
     summary = answer.get("verification") if isinstance(answer.get("verification"), dict) else {}
     claims = int(summary.get("claims", 0) or 0)
+    # The share is of the claims that were judged: a claim nobody checked (verification off, a web source, a verifier
+    # outage) is not an unsupported one, and is covered by the "unchecked" rule instead
+    checked = claims - int(summary.get("unchecked", 0) or 0)
     supported = int(summary.get(verify.SUPPORTED, 0) or 0)
     rank, relative = _best_cited(found, docs)
     return {
@@ -135,7 +143,8 @@ def features(
         "undated_claims": len(claim_ages) - len(known_ages),
         "verification": summary.get("status", ""),
         "claims": claims,
-        "supported_fraction": round(supported / claims, 3) if claims else None,
+        "supported_fraction": round(supported / checked, 3) if checked > 0 else None,
+        "unchecked_claims": claims - checked,
         "flagged_claims": int(summary.get(verify.UNSUPPORTED, 0) or 0) + int(summary.get(verify.CONTRADICTED, 0) or 0),
         "contradicted_claims": int(summary.get(verify.CONTRADICTED, 0) or 0),
         "conflict": answer.get("state") == states.CONFLICTING,
@@ -190,6 +199,8 @@ def _lowering(f: dict[str, Any], settings: Settings) -> list[dict[str, str]]:
         add(_reason("partial", "lowers", "Only part of the requirement is covered", MEDIUM))
     if f["verification"] in ("", verify.UNCHECKED):
         add(_reason("unchecked", "lowers", "The claims were not checked against the evidence", MEDIUM))
+    elif f["unchecked_claims"]:
+        add(_reason("partly_unchecked", "lowers", f"{f['unchecked_claims']} claim(s) could not be checked against the evidence", MEDIUM))
     return reasons
 
 
@@ -222,7 +233,7 @@ def assess(
 ) -> dict[str, Any]:
     """``{"band", "reasons", "features"}`` for an answer. Reasons that lower the band come first, the worst first."""
     settings = settings or get_settings()
-    today = today or datetime.now(UTC).date()
+    today = today or _now_date()
     state = answer.get("state")
     f = features(answer, docs or [], settings, today)
 

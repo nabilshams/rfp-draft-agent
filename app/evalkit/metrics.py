@@ -24,6 +24,7 @@ HIGHER_IS_BETTER = (
     "state_correctness",
     "claim_support_rate",
     "confidence_separation",
+    "injected_confidence_separation",
     "injection_recall",
     "deterministic_catch_rate",
 )
@@ -227,11 +228,10 @@ def score_requirement(
     score.unsupported_final = unsupported_figures(answer.get("answer_markdown", ""), sources)
     if score.unsupported_raw:
         score.problems.append(f"model wrote figures not in the sources: {', '.join(score.unsupported_raw)}")
-    # Whether a person would have to change this answer, judged only on things the confidence band is not made from:
-    # the expected facts, the expected compliance, invented figures, and answering what it should not have.
-    score.needs_edit = (
-        score.answer_ok is False or score.compliance_ok is False or bool(score.unsupported_raw) or score.state_ok is False
-    )
+    # Whether a person would have to change this answer, judged only on things the confidence band is not made from
+    # (so not on the claim verdicts, the figures or the citations): the expected facts, the expected compliance, and
+    # answering what it should not have.
+    score.needs_edit = score.answer_ok is False or score.compliance_ok is False or score.state_ok is False
     return score
 
 

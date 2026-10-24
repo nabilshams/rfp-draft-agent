@@ -677,9 +677,10 @@ def calibration(store: LedgerStore, project_id: str, user: UserClaims, settings:
         current = requirements[rid]
         row = bands[latest["confidence"]["band"]]
         row["answers"] += 1
-        if any(v.get("source") != "model" and v.get("restored_from") is None for v in later):
+        # A person writing their own text, or bringing back a different version, has set the model's latest answer aside
+        if any(v.get("source") != "model" and v.get("restored_from") != latest["version"] for v in later):
             row["edited"] += 1
-        elif current.get("status") == "approved" and not any(v.get("restored_from") not in (None, latest["version"]) for v in later):
+        elif current.get("status") == "approved":
             row["accepted"] += 1
         else:
             row["pending"] += 1

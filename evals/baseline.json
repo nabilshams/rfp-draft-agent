@@ -17,6 +17,7 @@
     "false_answer_rate": 0.0,
     "answer_correctness": 1.0,
     "compliance_correctness": 1.0,
+    "injected_confidence_separation": 1.0,
     "injection_recall": 1.0,
     "injection_false_positive_rate": 0.0,
     "deterministic_catch_rate": 1.0

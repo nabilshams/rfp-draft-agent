@@ -19,10 +19,15 @@
 | Compliance correctness | 100.0% |  | Yes/Partial/No matches what the sources support |
 | Claim support | 87.8% |  | the writer's own claims that the verifier found supported by their evidence |
 | Confidence separation | 0.0% |  | edit rate of the Low band minus the High band's, on answers that are answers (positive = the band ranks answers correctly) |
+| Injected set: High band | 16 |  | answers made of one checked claim that got the High band |
+| Injected set: Low band | 16 |  | the same for the Low band |
+| High band: wrong | 0.0% |  | share of High-band injected answers that are deliberately wrong (should be 0%) |
+| Low band: wrong | 100.0% |  | the same for the Low band (should be high) |
+| Injected confidence separation | 100.0% |  | wrong-rate of the Low band minus the High band's, on answers whose truth was decided in advance |
 | High-band answers | 9 |  | answers given the High band (placeholders are not counted) |
 | Medium-band answers | 2 |  | answers given the Medium band |
 | Low-band answers | 6 |  | answers given the Low band |
-| High band: needs a change | 0.0% |  | share of High-band answers a person would have to change (wrong fact, wrong compliance, invented figure) |
+| High band: needs a change | 0.0% |  | share of High-band answers a person would have to change (wrong fact, wrong compliance, answering what it should not) |
 | Low band: needs a change | 0.0% |  | the same for the Low band |
 | Injected errors caught | 100.0% |  | deliberately wrong claims the verifier did not accept (target 80%+) |
 | Correct claims rejected | 0.0% |  | correct claims the verifier did not accept (target 10% or less) |
