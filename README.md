@@ -115,6 +115,9 @@ cp .env.example .env
 | `VERIFY_ANSWERS` | Check every drafted answer's claims against the evidence it cites (see [Claim verification](#claim-verification)); roughly one extra model call per requirement. `true` by default |
 | `VERIFIER_MODEL_DEPLOYMENT_NAME` | The model deployment the verifier runs on. Empty = the same as the writer (`FOUNDRY_MODEL_DEPLOYMENT_NAME`). A different deployment reduces errors the two would share; it must already exist in the Foundry account |
 | `VERIFIER_INPUT_PRICE_PER_MILLION` / `VERIFIER_OUTPUT_PRICE_PER_MILLION` | USD per million tokens, only when the verifier's deployment is priced differently from the writer's (`MODEL_*_PRICE_PER_MILLION`). Used for the cost estimate in telemetry; empty = the writer's prices |
+| `CONFIDENCE_FRESH_DAYS` / `CONFIDENCE_STALE_DAYS` | Age of the sources a claim rests on: newer than the first is fresh (default `730`), older than it caps the band at Medium, older than the second (default `1825`) at Low |
+| `CONFIDENCE_HIGH_SUPPORT` / `CONFIDENCE_LOW_SUPPORT` | Share of an answer's claims the verifier found supported: High needs at least the first (default `0.9`); below the second (default `0.6`) is Low |
+| `CONFIDENCE_TOP_RANK` / `CONFIDENCE_MIN_RELATIVE_SCORE` | A cited source should rank within the top N matches (default `3`) and score at least this share of the best match (default `0.5`), or the band stops at Medium |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything, so a requirement is only treated as having no evidence when the search returns nothing; the model and the citation check catch the rest) |
 | `ROUTE_COMMERCIAL_TERMS` / `ROUTE_LEGAL_TERMS` | Requirements about pricing or contract terms are never drafted: they become a placeholder for the commercial or legal team (see [Answer states](#answer-states-and-never-invent)). Terms are separated by `;`; `price*` matches any word starting with `price`, other terms match whole words and phrases, and a requirement's category and section are read too. Defaults cover price, cost, fees, discounts, payment, quotes and budgets, and liability, indemnity, warranty, governing law, IP, insurance and termination. An empty list turns routing off |
@@ -290,9 +293,10 @@ answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
 | `DELETE /projects/{id}` | Delete it with all its answers and history (owner or admin) |
 | `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder, has conflicting evidence, or has a claim its evidence does not support cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
 | `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
+| `GET /projects/{id}/calibration` | How each confidence band has fared with reviewers: per band, the model answers accepted as drafted, edited by a person, or still pending, and the edit rate (see [Confidence](#confidence-bands)) |
 | `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
 | `POST /projects/{id}/draft` | Draft the project in the background (202). Body: `client_id`, `kb_project_id` (the knowledge-base project segment to search), optional `solution_area`, `tone`, `approach`, `context`, `allow_web_search`, and `rids` to redo specific requirements |
-| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person), `failed` and `flagged` (answers with a claim the verifier found unsupported or contradicted) |
+| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person), `failed`, `flagged` (answers with a claim the verifier found unsupported or contradicted) and `low_confidence` |
 | `POST /projects/{id}/draft/cancel` | Ask the running draft to stop (whoever started it, the project owner or an admin). Answers already saved are kept |
 
 **Drafting a project.** Each answer is written to the ledger as a new answer version the moment the model produces it
@@ -763,6 +767,43 @@ says only "online"). Verification adds about 0.6k input and 0.1k output tokens a
 cites, so a claim that is true but cited to the wrong passage is flagged, and a superseded source that the answer cites
 correctly is not (finding conflicts between sources is a separate piece of work, #41).
 
+<a id="confidence-bands"></a>
+**Confidence: a band, with the reasons.** Every drafted answer carries `confidence`: a band (**High**, **Medium** or
+**Low**) and the list of reasons that produced it, shown beside the answer, in the requirement's header (so a reviewer
+scanning the list sees Low first), in the Word document and in the matrix's last column. There is no percentage, and
+nothing the model says about itself is an input. Each input is a fact the system can check:
+
+- how many *independent* sources (distinct documents) have a quote that is really in the document they cite;
+- how authoritative they are: an `authoritative` source, or an `approved` past answer, can stand alone; a historical,
+  external, unreviewed, superseded or draft one needs a second source behind the same claim;
+- how old they are, against `CONFIDENCE_FRESH_DAYS` and `CONFIDENCE_STALE_DAYS`;
+- how well the cited sources matched the requirement: their rank among the retrieved documents and their score
+  relative to the best match;
+- the share of the answer's claims the verifier found supported (`CONFIDENCE_HIGH_SUPPORT`, `CONFIDENCE_LOW_SUPPORT`);
+- whether the sources conflict, and whether only part of the requirement is covered.
+
+These are judged **claim by claim**: an answer is only as strong as its weakest claim, so a claim that rests only on a
+five-year-old proposal lowers the band even when another claim cites a current policy. Each rule that applies adds a
+reason that lowers the band to Medium or Low, or one that supports it; the band is the lowest any reason allows, so
+changing one input (removing a source, an older date) changes the band in a way you can read off the reasons. Claims
+that were not checked (verification off, a web-only source, or a verifier outage) cap it at Medium; the share of supported claims is taken over the claims that were judged. Placeholders and
+failures are Low (there is no answer to trust); text a person wrote has no band. Similarity to an approved answer
+becomes an input when the answer library exists (#38). Thresholds are configuration, never code.
+
+**Calibration.** The band earns trust by how it fares with people. `GET /projects/{id}/calibration` reports, per
+band, the model's latest answers that were approved as drafted, edited by a person, or are still pending, and the edit
+rate: a calibrated band has a falling edit rate as it rises. On the golden set (`evals/baseline.md`) the evaluation
+reports the same split, using what a person would have to change (a wrong fact, a wrong compliance value, an invented
+figure, answering what it should not) and never the verifier's verdicts, which the band is made from. On the 32
+injected answers of the verifier's evaluation (16 deliberately wrong, 16 right, decided in advance) every High-band
+answer is right and every Low-band answer is wrong: 0% against 100%. That shows the band follows the evidence and the
+verifier's verdicts; it is also only as good as the verifier, and a replay with a verifier that approves everything
+drops it sharply. The model's own recorded answers on the three golden RFPs contain no answer that fails the golden
+checks (the verifier's finer flags are the band's input, so they cannot also be its label), so they cannot
+calibrate it and their edit rates are all 0. How well the bands are tuned for your content needs real review outcomes,
+which the endpoint collects as your team works. The evaluation's clock is pinned (`AS_OF`) so source ages do not drift
+under the committed baseline.
+
 **Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
 a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated
 answer or section narrative must also appear in what the model was given (the retrieved sources, the requirement,
@@ -955,6 +996,7 @@ rfp-draft-agent/
 │   │   ├── normalize.py           # Shape checks on model output
 │   │   ├── states.py              # Answer states, routing to people, and the "never invent" rule
 │   │   ├── verify.py              # Claim verification: rules first, then an independent verifier
+│   │   ├── confidence.py          # The explainable confidence band (High/Medium/Low) and its reasons
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   ├── retrieval.py           # DLAC + segmentation query builder
 │   │   └── untrusted.py           # Fences that mark third-party text in prompts

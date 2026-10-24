@@ -15,7 +15,7 @@ from typing import Any
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from app.agents import states, verify
+from app.agents import confidence, states, verify
 from app.ingestion.provenance import describe_source
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,9 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
         verification = verify.describe(resp.get("verification"))
         if verification:
             doc.add_paragraph(f"Verification: {verification}")
+        band = confidence.describe(resp.get("confidence"), reasons=5)
+        if band:
+            doc.add_paragraph(f"Confidence: {band}")
 
         # Answer
         doc.add_paragraph(resp.get("answer_markdown", ""))

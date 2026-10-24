@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from app.agents import grounding, kb_search, lifecycle, runner, states, verify
+from app.agents import confidence, grounding, kb_search, lifecycle, runner, states, verify
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
 from app.agents.untrusted import fence, guidance_block
@@ -187,13 +187,14 @@ def answer_single_requirement(**kwargs: Any) -> dict[str, Any]:
         if callable(context):
             context = context()
         span.set(context__docs=len(context.docs))
-        answer = _answer_single_requirement(**{**kwargs, "context": context})
+        answer = confidence.attach(_answer_single_requirement(**{**kwargs, "context": context}), context.docs)
         span.set(
             evidence=len(answer.get("evidence") or []),
             citations=len(kb_search.cited_urls(answer)),
             answer__chars=len(str(answer.get("answer_markdown", ""))),
             answer__state=str(answer.get("state", "")),
             verification__status=str((answer.get("verification") or {}).get("status", "")),
+            confidence__band=str(answer["confidence"]["band"]),
             outcome="ok",
         )
         return answer

@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.agents import states, verify
+from app.agents import confidence, states, verify
 from app.agents.normalize import normalize_answer
 from app.auth.access import can_manage, is_admin, resolve_share_groups
 from app.auth.entra import UserClaims
@@ -178,6 +178,7 @@ def _requirement_docs(project_id: str, requirements: list[dict[str, Any]], actor
             "state": "",
             "missing": "",
             "verification": "",
+            "confidence": "",
             "answer_version": 0,
             "answer": None,
             "rev": 1,
@@ -470,6 +471,24 @@ def _claims(value: Any) -> list[dict[str, Any]]:
     return kept
 
 
+def _confidence(value: Any) -> dict[str, Any]:
+    """An answer's confidence band, reasons and the facts they were made from, as the ledger keeps them."""
+    if not isinstance(value, dict) or value.get("band") not in confidence.LABELS:
+        return {}
+    reasons = [
+        {k: str(r.get(k) or "")[:200] for k in ("code", "effect", "level", "text")}
+        for r in (value.get("reasons") if isinstance(value.get("reasons"), list) else [])[: confidence.MAX_REASONS]
+        if isinstance(r, dict) and r.get("effect") in ("lowers", "supports") and r.get("text")
+    ]
+    facts = value.get("features") if isinstance(value.get("features"), dict) else {}
+    kept = {
+        str(k)[:40]: v
+        for k, v in list(facts.items())[:40]
+        if isinstance(v, bool | int | float | str | type(None)) and (not isinstance(v, str) or len(v) <= 40)
+    }
+    return {"band": value["band"], "reasons": reasons, "features": kept}
+
+
 def _verification(value: Any) -> dict[str, Any]:
     """An answer's overall verification as the ledger keeps it (empty when there is none)."""
     if not isinstance(value, dict) or value.get("status") not in verify.STATUSES:
@@ -527,6 +546,7 @@ def add_answer(
     # was not checked by the verifier: it carries none, which also lifts the block on a flagged draft.
     carries_claims = source == "model" or restored_from is not None
     verification = _verification(content.get("verification")) if carries_claims else {}
+    band = _confidence(content.get("confidence")) if carries_claims else {}
     document: Doc = {
         "id": _answer_doc_id(rid, version),
         "kind": "answer",
@@ -544,6 +564,7 @@ def add_answer(
         "missing": str(content.get("missing") or "")[:300] if state != states.FULLY else "",
         "claims": _claims(content.get("claims")) if carries_claims else [],
         "verification": verification,
+        "confidence": band,
         "source": source,
         "author": actor.oid,
         "author_name": actor.name,
@@ -560,6 +581,7 @@ def add_answer(
         state=state,
         missing=document["missing"],
         verification=verification.get("status", ""),
+        confidence=band.get("band", ""),
         rev=requirement["rev"] + 1,
         updated_at=now,
         updated_by=actor.oid,
@@ -567,6 +589,7 @@ def add_answer(
     event = new_event(
         project_id, actor, "answer.added", rid, version=version, source=source, state=state,
         **({"verification": verification["status"]} if verification else {}),
+        **({"confidence": band["band"]} if band else {}),
         **({"restored_from": restored_from} if restored_from is not None else {}),
         **({"job_id": job_id} if job_id else {}),
     )
@@ -626,3 +649,42 @@ def list_events(
     load_project(store, project_id, user, settings)
     events = store.query(project_id, "event", rid=rid, order_by="at", descending=True, limit=limit, offset=offset)
     return [_out(e, keep_id=True) for e in events]
+
+# ── Calibration ──────────────────────────────────────────
+
+
+def calibration(store: LedgerStore, project_id: str, user: UserClaims, settings: Settings) -> Doc:
+    """How each confidence band has fared with the people who reviewed the answers: the measure of whether it can be trusted.
+
+    For every requirement the latest answer the model wrote (with a band, and an answer rather than a placeholder) is
+    ``accepted`` if it is the current answer and has been approved, ``edited`` if a person wrote a different answer
+    after it, and ``pending`` otherwise. A band is calibrated when its ``edit_rate`` falls as the band rises.
+    """
+    load_project(store, project_id, user, settings)
+    requirements = {r["rid"]: r for r in store.query(project_id, "requirement")}
+    by_rid: dict[str, list[Doc]] = {}
+    for answer in store.query(project_id, "answer", order_by="version"):
+        by_rid.setdefault(answer["rid"], []).append(answer)
+
+    bands = {band: {"answers": 0, "accepted": 0, "edited": 0, "pending": 0} for band in confidence.BANDS}
+    for rid, versions in by_rid.items():
+        model = [v for v in versions if v.get("source") == "model" and (v.get("confidence") or {}).get("band")
+                 and v.get("state") in states.ANSWERED]
+        if not model or rid not in requirements:
+            continue
+        latest = max(model, key=lambda v: v["version"])
+        later = [v for v in versions if v["version"] > latest["version"]]
+        current = requirements[rid]
+        row = bands[latest["confidence"]["band"]]
+        row["answers"] += 1
+        # A person writing their own text, or bringing back a different version, has set the model's latest answer aside
+        if any(v.get("source") != "model" and v.get("restored_from") != latest["version"] for v in later):
+            row["edited"] += 1
+        elif current.get("status") == "approved":
+            row["accepted"] += 1
+        else:
+            row["pending"] += 1
+    for row in bands.values():
+        decided = row["accepted"] + row["edited"]
+        row["edit_rate"] = round(row["edited"] / decided, 4) if decided else None
+    return {"bands": bands, "decided": sum(r["accepted"] + r["edited"] for r in bands.values())}

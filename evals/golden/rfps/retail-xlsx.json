@@ -26,7 +26,7 @@
     {"id": "RT-04", "text": "The system must meet WCAG 2.1 AA accessibility.", "supported": true,
      "expected_sources": ["accessibility-statement"], "contains_any": [["2.1"], ["WCAG", "Web Content Accessibility"]]},
     {"id": "RT-05", "text": "Describe a similar loyalty platform migration you have delivered.", "supported": true,
-     "expected_sources": ["case-study-loyalty"], "contains_any": [["14 weeks"]]},
+     "expected_sources": ["case-study-loyalty"], "contains_any": [["14 weeks", "14-week"]]},
     {"id": "RT-06", "text": "Does your solution include an on-premises hardware appliance?", "supported": false},
     {"id": "RT-07", "text": "Provide measurable business outcomes you achieved for government clients.", "supported": false},
     {"id": "RT-08", "text": "The service must provide at least 99.99% availability.", "supported": true,

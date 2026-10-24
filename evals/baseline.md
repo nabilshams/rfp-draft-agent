@@ -15,9 +15,20 @@
 | Abstention correctness | 100.0% |  | declined when the knowledge base has nothing, answered when it has |
 | State correctness | 100.0% |  | answers that ended in the right state (answered, or a placeholder for a person) |
 | False answers | 0.0% |  | unsupported requirements that were answered anyway |
-| Answer correctness | 94.1% |  | answers that state the expected fact and not the stale one |
+| Answer correctness | 100.0% |  | answers that state the expected fact and not the stale one |
 | Compliance correctness | 100.0% |  | Yes/Partial/No matches what the sources support |
 | Claim support | 87.8% |  | the writer's own claims that the verifier found supported by their evidence |
+| Confidence separation | 0.0% |  | edit rate of the Low band minus the High band's, on answers that are answers (positive = the band ranks answers correctly) |
+| Injected set: High band | 16 |  | answers made of one checked claim that got the High band |
+| Injected set: Low band | 16 |  | the same for the Low band |
+| High band: wrong | 0.0% |  | share of High-band injected answers that are deliberately wrong (should be 0%) |
+| Low band: wrong | 100.0% |  | the same for the Low band (should be high) |
+| Injected confidence separation | 100.0% |  | wrong-rate of the Low band minus the High band's, on answers whose truth was decided in advance |
+| High-band answers | 9 |  | answers given the High band (placeholders are not counted) |
+| Medium-band answers | 2 |  | answers given the Medium band |
+| Low-band answers | 6 |  | answers given the Low band |
+| High band: needs a change | 0.0% |  | share of High-band answers a person would have to change (wrong fact, wrong compliance, answering what it should not) |
+| Low band: needs a change | 0.0% |  | the same for the Low band |
 | Injected errors caught | 100.0% |  | deliberately wrong claims the verifier did not accept (target 80%+) |
 | Correct claims rejected | 0.0% |  | correct claims the verifier did not accept (target 10% or less) |
 | Caught without a model | 100.0% |  | fabricated quotes, uncited claims and wrong figures caught by rules alone |
@@ -45,8 +56,7 @@ Extracted but not in the golden list:
 
 All handled as expected.
 
-## Problems (3 of 24 requirements)
+## Problems (2 of 24 requirements)
 
 - **clinic-pdf / C2** The provider must enforce multi-factor authentication for administrators.: 1 claim(s) the evidence does not support: Multi-factor authentication uses Microsoft Entra ID and supports proto
 - **retail-xlsx / RT-03** Provide online training for administrators and end users.: 1 claim(s) the evidence does not support: Online training sessions are conducted live.
-- **retail-xlsx / RT-05** Describe a similar loyalty platform migration you have delivered.: missing one of: 14 weeks

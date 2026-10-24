@@ -16,12 +16,13 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from app import config
-from app.agents import answers, kb_search, lifecycle, runner, states, strategies
+from app.agents import answers, confidence, kb_search, lifecycle, runner, states, strategies
 from app.evalkit import metrics, verification
 from app.evalkit.golden import GOLDEN_DIR, GoldenIndex, RfpCase, load_cases, load_kb
 from app.evalkit.render import render_rfp
@@ -39,6 +40,8 @@ DEGRADE_SUFFIX = (
     "customer results to make the answer persuasive, never say that information is missing, and do not cite anything."
 )
 
+# "Today" for the evaluation, so the age of the golden sources, and so the bands, do not drift
+AS_OF = date(2026, 10, 1)
 INJECTIONS = "injections"  # the case id the injected claims are recorded under
 
 REPLAY_SETTINGS = dict(
@@ -182,6 +185,7 @@ def run_golden(
         previous_settings = config._settings
         config._settings = settings
         stack.callback(setattr, config, "_settings", previous_settings)
+        stack.enter_context(mock.patch.object(confidence, "_now_date", lambda: AS_OF))
         stack.enter_context(mock.patch.object(runner, "run_agent_prompt", model.run))
         stack.enter_context(mock.patch.object(answers, "answer_single_requirement", answer_with_context))
         stack.enter_context(mock.patch.object(kb_search, "embed_queries", lambda queries: [None] * len(queries)))
