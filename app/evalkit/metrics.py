@@ -14,6 +14,8 @@ from app.agents.grounding import figures_in
 HIGHER_IS_BETTER = (
     "extraction_recall",
     "extraction_precision",
+    "extraction_recall_pdf", "extraction_precision_pdf", "extraction_recall_docx", "extraction_precision_docx",
+    "extraction_recall_xlsx", "extraction_precision_xlsx",
     "retrieval_hit_rate",
     "retrieval_mrr",
     "citation_support_rate",
@@ -23,6 +25,13 @@ HIGHER_IS_BETTER = (
     "answer_rate",
     "state_correctness",
     "claim_support_rate",
+    "typed_field_accuracy",
+    "ai_extraction_recall",
+    "ai_extraction_precision",
+    "ai_typed_field_accuracy",
+    "duplicate_grouping_correctness",
+    "non_answered_capture",
+    "deadline_capture",
     "confidence_separation",
     "injected_confidence_separation",
     "injection_recall",
@@ -66,7 +75,8 @@ def match_requirements(
     """One-to-one matching of expected requirement ids to positions in *extracted*, best matches first."""
     pairs = sorted(
         (
-            (_overlap(e.get("text", ""), x["text"]), -i, x["id"], i)
+            # Equal wording (a repeated question) is told apart by the id the document gave it
+            (_overlap(e.get("text", ""), x["text"]), e.get("id") == x["id"], -i, x["id"], i)
             for x in expected
             for i, e in enumerate(extracted)
         ),
@@ -74,7 +84,7 @@ def match_requirements(
     )
     matched: dict[str, int] = {}
     taken: set[int] = set()
-    for score, _, expected_id, index in pairs:
+    for score, _, _, expected_id, index in pairs:
         if score < threshold:
             break
         if expected_id in matched or index in taken:
@@ -104,6 +114,8 @@ class RequirementScore:
     verification: str = ""  # the claim verifier's overall status for the answer
     confidence: str = ""  # the band: high, medium or low
     confidence_reasons: list[str] = field(default_factory=list)
+    typed_ok: bool | None = None  # kind, response type and evidence flag as labelled (None when the case labels none)
+    duplicate_ok: bool | None = None  # grouped with the right earlier item, or correctly not grouped
     needs_edit: bool | None = None  # a person would have to change this answer (judged without the confidence inputs)
     claims: dict[str, int] = field(default_factory=dict)  # verdict -> number of claims
     state_ok: bool | None = None  # the answer state is one the requirement should end in
@@ -154,6 +166,24 @@ def unsupported_figures(text: str, sources: str) -> list[str]:
     return sorted(figures_in(text) - figures_in(sources))
 
 
+def typed_check(expected: dict[str, Any], got: dict[str, Any] | None, expected_id_of: dict[str, str]) -> dict[str, Any]:
+    """How the extracted item's typed fields compare with the labels. *expected_id_of* maps an extracted id to its golden id."""
+    if got is None:
+        return {}
+    wrong = [
+        f"{key} {got.get(key)!r}, expected {expected[key]!r}"
+        for key in ("kind", "response_type", "evidence_required")
+        if key in expected and got.get(key) != expected[key]
+    ]
+    grouped_with = expected_id_of.get(got.get("duplicate_of", ""), "")
+    duplicate_ok = grouped_with == expected.get("duplicate_of", "")
+    if not duplicate_ok:
+        wrong.append(f"grouped with {grouped_with or 'nothing'}, expected {expected.get('duplicate_of') or 'nothing'}")
+    labelled = any(key in expected for key in ("kind", "response_type", "evidence_required"))
+    return {"typed_ok": (not [w for w in wrong if not w.startswith("grouped")]) if labelled else None,
+            "duplicate_ok": duplicate_ok, "problems": wrong}
+
+
 def score_requirement(
     *,
     case: str,
@@ -166,6 +196,7 @@ def score_requirement(
     retrieval_rank: int | None,
     latency_s: float | None,
     usage: dict[str, int] | None,
+    typed: dict[str, Any] | None = None,
 ) -> RequirementScore:
     score = RequirementScore(
         case=case,
@@ -179,6 +210,9 @@ def score_requirement(
         input_tokens=(usage or {}).get("input_tokens"),
         output_tokens=(usage or {}).get("output_tokens"),
     )
+    typed = typed or {}
+    score.typed_ok, score.duplicate_ok = typed.get("typed_ok"), typed.get("duplicate_ok")
+    score.problems.extend(f"extraction: {w}" for w in typed.get("problems", []))
     if score.retrieval_expected and retrieval_rank is None:
         score.problems.append("expected source not retrieved")
     if not extracted:
@@ -263,6 +297,10 @@ def summarise(scores: list[RequirementScore], expected_total: int, extracted_tot
         "retrieval_mrr": round(mean(1 / s.retrieval_rank if s.retrieval_rank else 0.0 for s in retrieval), 4)
         if retrieval
         else None,
+        "typed_field_accuracy": _rate(sum(1 for s in scores if s.typed_ok), sum(1 for s in scores if s.typed_ok is not None)),
+        "duplicate_grouping_correctness": _rate(
+            sum(1 for s in scores if s.duplicate_ok), sum(1 for s in scores if s.duplicate_ok is not None)
+        ),
         "answer_rate": _rate(len(answered), len(scores)),
         "claim_support_rate": _rate(
             sum(s.claims.get(verify.SUPPORTED, 0) for s in answered),

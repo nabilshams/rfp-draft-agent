@@ -68,6 +68,9 @@ def redact_extraction(extraction: RFPExtractionResult) -> RFPExtractionResult:
         requirement.keywords = [redact_text(k) for k in requirement.keywords]
     extraction.questions = [redact_text(q) for q in extraction.questions]
     extraction.evaluation_criteria = [redact_text(c) for c in extraction.evaluation_criteria]
+    extraction.deadlines = [{**d, "text": redact_text(d.get("text", ""))} for d in extraction.deadlines]
+    extraction.submission_rules = [redact_text(r) for r in extraction.submission_rules]
+    extraction.warnings = [redact_text(w) for w in extraction.warnings]
     extraction.sections = redact_records(extraction.sections)
     extraction.response_instructions = redact_records([extraction.response_instructions])[0]
     return extraction

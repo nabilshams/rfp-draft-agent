@@ -27,7 +27,7 @@ from app.evalkit import metrics, verification
 from app.evalkit.golden import GOLDEN_DIR, GoldenIndex, RfpCase, load_cases, load_kb
 from app.evalkit.render import render_rfp
 from app.evaluation import _matches
-from app.ingestion import pipeline
+from app.ingestion import ai_extract, classify, pipeline
 from app.ingestion.rfp_extract import guidance_text
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,11 @@ class CaseSummary:
     matched: int
     missed: list[str] = field(default_factory=list)  # expected requirements that were not extracted
     extra: list[str] = field(default_factory=list)  # extracted text that matches no expected requirement
+    format: str = ""
+    non_answered_expected: int = 0  # instructions, dates and submission rules the RFP has (they are typed, not drafted)
+    non_answered_found: int = 0
+    deadlines_expected: int = 0
+    deadlines_found: int = 0
 
 
 @dataclass
@@ -83,10 +88,13 @@ def load_recordings(golden_dir: Path, variant: str, case_id: str) -> dict[str, A
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def save_recordings(golden_dir: Path, variant: str, recordings: dict[str, dict[str, Any]]) -> None:
+def save_recordings(golden_dir: Path, variant: str, recordings: dict[str, dict[str, Any]], *, merge: bool = False) -> None:
+    """Write the recordings of each case. With *merge* they are added to what is already there (not replacing it)."""
     for case_id, entries in recordings.items():
         path = recordings_path(golden_dir, variant, case_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if merge and path.exists():
+            entries = {**json.loads(path.read_text(encoding="utf-8")), **entries}
         path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -105,7 +113,9 @@ class _Model:
     def run(self, agent_id: str, content: str, *, web_search: bool = False) -> runner.AgentRunResult:
         # The verifier's calls are recorded beside the writer's, under "<requirement>#verify"
         key = self.key
-        if verification.is_verifier(agent_id):
+        if content.startswith("Read part "):  # the model reading the RFP: recorded per part, apart from the answers
+            key = f"{self.key}#extract#{content.split()[2]}"
+        elif verification.is_verifier(agent_id):
             key = f"{self.key}#verify"
             self.verifier_calls += 1
         if self.mode == "replay":
@@ -153,6 +163,7 @@ def run_golden(
     variant: str = "baseline",
     golden_dir: Path = GOLDEN_DIR,
     only: str | None = None,
+    extraction_only: bool = False,
 ) -> EvalRun:
     """Score the golden set. *mode* is ``replay`` (recorded model output, no Azure) or ``live`` (real model calls)."""
     if mode not in ("replay", "live"):
@@ -194,24 +205,46 @@ def run_golden(
             stack.enter_context(mock.patch.object(lifecycle, "ensure_agent", verification.replay_agent_id))
 
         for case in cases:
+            if extraction_only:
+                break
             model.case = case.id
             case_scores, summary = _run_case(case, model, held)
             scores.extend(case_scores)
             summaries.append(summary)
 
+        ai = _AiExtraction()
+        if variant == "baseline" and (only is None or extraction_only):  # the degraded variant tests answers, not reading
+            for case in cases:
+                model.case, model.key = case.id, ""
+                ai.add(_read_with_model(case, settings))
+
         injected = verification.InjectionRun()
-        if only is None and (cases_to_inject := verification.load_injections(golden_dir)):
+        if only is None and not extraction_only and (cases_to_inject := verification.load_injections(golden_dir)):
             model.case = INJECTIONS
             injected = verification.run_injections(cases_to_inject, load_kb(golden_dir), blob_url, model)
 
     expected = sum(s.expected for s in summaries)
     extracted = sum(s.extracted for s in summaries)
     matched = sum(s.matched for s in summaries)
+    wanted = sum(s.non_answered_expected for s in summaries)
+    dates = sum(s.deadlines_expected for s in summaries)
+    by_format: dict[str, list[CaseSummary]] = {}
+    for summary in summaries:
+        by_format.setdefault(summary.format or "unknown", []).append(summary)
+    per_format = {}
+    for fmt, group in by_format.items():  # recall and precision for each kind of file
+        total_expected, total_extracted, total_matched = (sum(getattr(s, k) for s in group) for k in ("expected", "extracted", "matched"))
+        per_format[f"extraction_recall_{fmt}"] = round(total_matched / total_expected, 4) if total_expected else None
+        per_format[f"extraction_precision_{fmt}"] = round(total_matched / total_extracted, 4) if total_extracted else None
     return EvalRun(
         variant=variant,
         mode=mode,
         metrics={
             **metrics.summarise(scores, expected, extracted, matched),
+            **per_format,
+            **ai.metrics(),
+            "non_answered_capture": round(sum(s.non_answered_found for s in summaries) / wanted, 4) if wanted else None,
+            "deadline_capture": round(sum(s.deadlines_found for s in summaries) / dates, 4) if dates else None,
             **metrics.verification_cost(model.verifier_records()),
             **injected.metrics,
         },
@@ -222,11 +255,60 @@ def run_golden(
     )
 
 
+class _AiExtraction:
+    """What the model-based extractor found on the golden RFPs, against the labels."""
+
+    def __init__(self) -> None:
+        self.expected = self.extracted = self.matched = self.typed = self.typed_ok = self.dropped = self.read = 0
+
+    def add(self, result: tuple[int, int, int, int, int, int] | None) -> None:
+        if result is None:
+            return
+        self.read += 1
+        for name, value in zip(("expected", "extracted", "matched", "typed", "typed_ok", "dropped"), result, strict=True):
+            setattr(self, name, getattr(self, name) + value)
+
+    def metrics(self) -> dict[str, Any]:
+        if not self.read:
+            return {}
+        return {
+            "ai_extraction_recall": round(self.matched / self.expected, 4) if self.expected else None,
+            "ai_extraction_precision": round(self.matched / self.extracted, 4) if self.extracted else None,
+            "ai_typed_field_accuracy": round(self.typed_ok / self.typed, 4) if self.typed else None,
+            "ai_items_dropped": self.dropped,
+        }
+
+
+def _read_with_model(case: RfpCase, settings: config.Settings) -> tuple[int, int, int, int, int, int] | None:
+    """Have the model read the RFP and score what it found. ``None`` when there is no recording of it."""
+    try:
+        result = ai_extract.extract(case.filename, render_rfp(case.spec), settings)
+    except ai_extract.ExtractionError:
+        return None
+    items = [r.model_dump() for r in result.requirements if r.kind in classify.ANSWERED_KINDS]
+    matched = metrics.match_requirements(items, case.requirements)
+    id_of = {items[index]["id"]: expected_id for expected_id, index in matched.items()}
+    checks = [
+        metrics.typed_check(e, items[matched[e["id"]]], id_of).get("typed_ok")
+        for e in case.requirements if e["id"] in matched
+    ]
+    labelled = [c for c in checks if c is not None]
+    dropped = sum(int(w.split()[0]) for w in result.warnings)  # each warning starts with how many items it is about
+    return len(case.requirements), len(items), len(matched), len(labelled), sum(1 for c in labelled if c), dropped
+
+
 def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[metrics.RequirementScore], CaseSummary]:
     extraction = pipeline.extract_requirements(case.filename, render_rfp(case.spec))
-    extracted = [r.model_dump() for r in extraction.requirements]
+    items = [r.model_dump() for r in extraction.requirements]
+    # Only items that are answered count as requirements; instructions, dates and submission rules are typed apart
+    extracted = [x for x in items if x["kind"] in classify.ANSWERED_KINDS]
     matched = metrics.match_requirements(extracted, case.requirements)
     guidance = guidance_text(extraction)
+    wanted = case.spec.get("non_answered", [])
+    found_kinds = sum(
+        1 for w in wanted if any(x["kind"] == w["kind"] and w["contains"].lower() in x["text"].lower() for x in items)
+    )
+    dates = [d["date"] for d in extraction.deadlines]
 
     summary = CaseSummary(
         id=case.id,
@@ -236,11 +318,19 @@ def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[
         matched=len(matched),
         missed=[e["id"] for e in case.requirements if e["id"] not in matched],
         extra=[x["text"] for i, x in enumerate(extracted) if i not in set(matched.values())],
+        format=str(case.spec.get("format", "")),
+        non_answered_expected=len(wanted),
+        non_answered_found=found_kinds,
+        deadlines_expected=len(case.spec.get("deadlines", [])),
+        deadlines_found=sum(1 for d in case.spec.get("deadlines", []) if d in dates),
     )
 
     # The requirements the pipeline found, in document order, are what gets answered
     order = sorted(matched.items(), key=lambda item: item[1])
-    to_answer = [extracted[index] for _, index in order]
+    # A repeat of an earlier item is not drafted: it takes that item's answer
+    id_of = {extracted[index]["id"]: expected_id for expected_id, index in matched.items()}
+    primaries = [(e, i) for e, i in order if not extracted[i]["duplicate_of"]]
+    to_answer = [extracted[index] for _, index in primaries]
 
     answers_by_id: dict[str, dict[str, Any]] = {}
     contexts: dict[str, list[dict[str, Any]]] = {}
@@ -258,7 +348,7 @@ def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[
             guidance=guidance,
         )
     )
-    for expected_id, _ in order:
+    for expected_id, _ in primaries:
         # The generator runs the model for a requirement when it is asked for it, so name the requirement first
         model.key = expected_id
         try:
@@ -267,6 +357,12 @@ def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[
             break
         contexts[expected_id] = held.get("docs", [])
         raw[expected_id] = model.recording()
+    for expected_id, index in order:
+        primary = id_of.get(extracted[index]["duplicate_of"])
+        if primary in answers_by_id:
+            answers_by_id[expected_id] = answers_by_id[primary]
+            contexts[expected_id] = contexts[primary]
+            raw[expected_id] = {k: v for k, v in raw[primary].items() if k in ("status", "text")}  # costs nothing again
 
     scores = []
     for expected in case.requirements:
@@ -283,6 +379,7 @@ def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[
             if found is not None:
                 rank = found if rank is None else min(rank, found)
         sources = "\n".join([_context_text(docs), expected["text"], guidance])
+        got = extracted[matched[expected_id]] if expected_id in matched else None
         scores.append(
             metrics.score_requirement(
                 case=case.id,
@@ -295,6 +392,7 @@ def _run_case(case: RfpCase, model: _Model, held: dict[str, Any]) -> tuple[list[
                 retrieval_rank=rank,
                 latency_s=recording.get("latency_s"),
                 usage=recording.get("usage"),
+                typed=metrics.typed_check(expected, got, id_of),
             )
         )
     return scores, summary

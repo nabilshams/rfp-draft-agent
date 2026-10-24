@@ -328,34 +328,10 @@ class TestExtractAi:
     async def body(self, client):
         return {"rfp_id": await upload_rfp(client, A), "filename": "rfp.docx"}
 
-    async def test_the_models_requirements_become_the_standard_extraction_shape(self, client, agent):
-        agent.reply = lambda _p: json.dumps(
-            {
-                "requirements": [{"id": "R1", "text": "Must encrypt", "category": "security", "priority": "mandatory"}],
-                "questions": ["Where is data stored?"],
-                "evaluation_criteria": ["Price"],
-            }
-        )
-
-        response = await client.post("/rfp/extract-ai", json=await self.body(client), headers=A)
-
-        assert response.status_code == 200, response.text
-        result = response.json()
-        assert result["requirements"][0]["id"] == "R1"
-        assert result["requirements"][0]["category"] == "security"
-        assert result["questions"] == ["Where is data stored?"]
-        assert result["evaluation_criteria"] == ["Price"]
-
     async def test_the_document_is_sent_fenced(self, client, agent):
-        agent.reply = lambda _p: json.dumps({"requirements": []})
+        agent.reply = lambda _p: json.dumps({"items": []})
         await client.post("/rfp/extract-ai", json=await self.body(client), headers=A)
         assert "<<<RFP-DOCUMENT:" in agent.prompts[0]
-
-    async def test_malformed_lists_are_tolerated(self, client, agent):
-        agent.reply = lambda _p: json.dumps({"requirements": "none", "questions": {"a": 1}, "evaluation_criteria": None})
-        response = await client.post("/rfp/extract-ai", json=await self.body(client), headers=A)
-        assert response.status_code == 200
-        assert response.json()["requirements"] == []
 
     async def test_non_json_output_is_a_502(self, client, agent):
         agent.reply = lambda _p: "I could not do that"

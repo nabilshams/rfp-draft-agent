@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     confidence_low_support: float = Field(0.6, alias="CONFIDENCE_LOW_SUPPORT", ge=0, le=1)  # below this: Low
     confidence_top_rank: int = Field(3, alias="CONFIDENCE_TOP_RANK", ge=1)  # cited sources should rank this well
     confidence_min_relative_score: float = Field(0.5, alias="CONFIDENCE_MIN_RELATIVE_SCORE", ge=0, le=1)
+    # ── Reading an RFP with the model: the document is cut into chunks and every chunk is read ──
+    extraction_chunk_chars: int = Field(6000, alias="EXTRACTION_CHUNK_CHARS", ge=1000, le=30000)
+    extraction_overlap_chars: int = Field(400, alias="EXTRACTION_OVERLAP_CHARS", ge=0, le=2000)
+    extraction_max_chunks: int = Field(40, alias="EXTRACTION_MAX_CHUNKS", ge=1, le=200)  # more is refused, not cut
     # ── Claim verification: a second, independent pass that judges each claim against the evidence it cites ──
     verify_answers: bool = Field(True, alias="VERIFY_ANSWERS")
     # Empty = the same deployment as the writer. A different deployment reduces the errors the two would share

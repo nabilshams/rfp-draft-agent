@@ -67,7 +67,7 @@ class TestSpreadsheets:
         by_id = {r.id: r for r in self.result().requirements}
         assert set(by_id) == {"F1", "F2", "F3"}
         question = by_id["F2"]
-        assert (question.type, question.priority, question.category) == ("question", "m", "technical")
+        assert (question.type, question.priority, question.category) == ("question", "mandatory", "technical")  # the sheet's "M" is read as mandatory
         assert by_id["F1"].type == "requirement"
 
     def test_the_question_list_is_kept_for_existing_clients(self):
@@ -146,7 +146,7 @@ class TestWordDocuments:
         by_id = {r.id: r for r in self.result().requirements}
         assert by_id["T-1"].text == "The system must support single sign-on."
         assert by_id["T-1"].anchor == "Table 1, row 2"
-        assert by_id["T-1"].priority == "m"
+        assert by_id["T-1"].priority == "mandatory"
         assert by_id["T-2"].type == "question"
 
     def test_table_rows_belong_to_the_section_they_sit_in(self):
@@ -320,33 +320,6 @@ class TestGuidance:
 
 
 class TestIdsAndQuestions:
-    async def test_ai_extraction_numbers_and_types_everything(self, client, agent):  # noqa: F811
-        agent.reply = lambda _p: json.dumps(
-            {
-                "requirements": [
-                    {"id": "R1", "text": "Must encrypt data"},
-                    {"id": "R1", "text": "Must log access"},
-                    {"id": "", "text": "Where is data stored?"},
-                ],
-                "questions": ["Where is data stored?", "Who owns the data?"],
-            }
-        )
-        rfp_id = await upload_rfp(client, A)
-
-        result = (
-            await client.post("/rfp/extract-ai", json={"rfp_id": rfp_id, "filename": "rfp.docx"}, headers=A)
-        ).json()
-
-        ids = [r["id"] for r in result["requirements"]]
-        assert len(ids) == len(set(ids)) == 4
-        assert {r["text"]: r["type"] for r in result["requirements"]} == {
-            "Must encrypt data": "requirement",
-            "Must log access": "requirement",
-            "Where is data stored?": "question",
-            "Who owns the data?": "question",
-        }
-        assert result["questions"] == ["Where is data stored?", "Who owns the data?"]
-
     @pytest.mark.parametrize(
         "given, expected",
         [

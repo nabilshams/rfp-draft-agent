@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--degrade", action="store_true", help="live only: add a deliberately bad instruction to every prompt")
     parser.add_argument("--record", action="store_true", help="live only: save the model's answers as recordings")
     parser.add_argument("--case", help="run one golden case only")
+    parser.add_argument("--extraction-only", action="store_true", help="live only: have the model read the RFPs and record just that")
     parser.add_argument("--report-dir", type=Path, default=GOLDEN_DIR.parent / "reports")
     parser.add_argument("--check", action="store_true", help="exit 1 if a metric is worse than the baseline")
     parser.add_argument("--tolerance", type=float, help=f"allowed drop per metric (default: the baseline's, else {DEFAULT_TOLERANCE})")
@@ -44,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     variant = "degraded" if args.degrade else args.variant
     if args.degrade and args.mode != "live":
         parser.error("--degrade changes the prompt, so it needs --mode live (replay uses what was recorded)")
+    if args.extraction_only and (args.mode != "live" or args.degrade):
+        parser.error("--extraction-only reads the RFPs with the real model, so it needs --mode live (and no --degrade)")
     if args.record and args.mode != "live":
         parser.error("--record needs --mode live")
     if args.write_baseline and (args.mode != "replay" or args.case):
@@ -53,9 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Live mode: this calls the real model and is billable.", file=sys.stderr)
 
     baseline = report.load_baseline(BASELINE)
-    run = run_golden(mode=args.mode, variant=variant, only=args.case)
+    run = run_golden(mode=args.mode, variant=variant, only=args.case, extraction_only=args.extraction_only)
     if args.record:
-        save_recordings(GOLDEN_DIR, variant, run.recordings)
+        save_recordings(GOLDEN_DIR, variant, run.recordings, merge=args.extraction_only)
         print(f"Recorded {sum(len(v) for v in run.recordings.values())} answers under evals/golden/recordings/{variant}/")
 
     written = report.write_report(
