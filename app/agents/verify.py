@@ -43,6 +43,8 @@ FLAGGED_VERDICTS = (UNSUPPORTED, CONTRADICTED)
 VERIFIED, PARTIALLY_VERIFIED, FLAGGED, UNCHECKED = "verified", "partially_verified", "flagged", "unchecked"
 STATUSES = (VERIFIED, PARTIALLY_VERIFIED, FLAGGED, UNCHECKED)
 
+LABELS = {VERIFIED: "Verified", PARTIALLY_VERIFIED: "Partly verified", FLAGGED: "Flagged", UNCHECKED: "Not checked"}
+
 MAX_CLAIMS = 25
 MAX_CLAIM_CHARS = 500
 MAX_REASON_CHARS = 200
@@ -190,6 +192,19 @@ def _ask_verifier(prompt: str) -> tuple[dict[str, tuple[str, str]], str]:
 
 
 # ── Putting it together ──────────────────────────────────
+
+
+def describe(summary: Any) -> str:
+    """A verification summary in words for a document or a person: ``Flagged (1 unsupported, 1 contradicted)``."""
+    if not isinstance(summary, dict) or summary.get("status") not in LABELS:
+        return ""
+    status, label = summary["status"], LABELS[summary["status"]]
+    if status == FLAGGED:
+        parts = [f"{summary.get(v, 0)} {v}" for v in (UNSUPPORTED, CONTRADICTED) if summary.get(v)]
+        return f"{label} ({', '.join(parts)})"
+    if status in (VERIFIED, PARTIALLY_VERIFIED):
+        return f"{label} ({summary.get(SUPPORTED, 0)} of {summary.get('claims', 0)} claims supported)"
+    return label
 
 
 def summarise(claims: list[dict[str, Any]], *, model: str = "", reason: str = "") -> dict[str, Any]:

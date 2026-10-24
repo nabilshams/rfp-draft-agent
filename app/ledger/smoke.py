@@ -75,7 +75,7 @@ def main() -> int:
         selection = drafting.select(store, project_id, None)
         check("selects only the requirements without an answer", len(selection.requirements) == 129 and "R1" not in selection.revs)
         sink = drafting.ProjectSink(store, settings, project_id, "smoke-job", selection)
-        saved = sink.record({"requirement_id": "R2", "answer_markdown": "Drafted.", "meets": "Yes", "evidence": [{"title": "t", "source_url": "/kb/doc/x", "quote": "q", "page": 3}]})
+        saved = sink.record({"requirement_id": "R2", "answer_markdown": "Drafted.", "meets": "Yes", "evidence": [{"id": "E1", "title": "t", "source_url": "/kb/doc/x", "quote": "q", "page": 3, "quote_verified": True}], "claims": [{"id": "C1", "text": "It is drafted.", "evidence_ids": ["E1"], "verdict": "unsupported", "reason": "r", "checked_by": "rule"}], "verification": {"status": "flagged", "claims": 1, "unsupported": 1}})
         check("saves a model answer as it arrives", saved["type"] == "saved" and saved["data"]["version"] == 1)
         service.update_requirement(store, settings, user, project_id, "R3", {"category": "edited-by-a-person"})
         refused = sink.record({"requirement_id": "R3", "answer_markdown": "Too late."})
@@ -85,6 +85,8 @@ def main() -> int:
         check("marks the requirement as failed", service.get_requirement(store, project_id, "R4", user, settings)["state"] == "failed")
         responses, requirements = sink.document_inputs()
         check("builds the documents from every answer, and every failure, in the project", len(responses) == 3 and len(requirements) == 130)
+        stored = service.get_requirement(store, project_id, "R2", user, settings)
+        check("keeps the claims and their verdicts with the answer", stored["verification"] == "flagged" and stored["answer"]["claims"][0]["evidence_ids"] == ["E1"])
         check("keeps evidence details on the answer", service.get_requirement(store, project_id, "R2", user, settings)["answer"]["evidence"][0]["page"] == 3)
     finally:
         if project_id:

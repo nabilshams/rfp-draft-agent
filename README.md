@@ -288,11 +288,11 @@ answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
 | `GET /projects/{id}` | The project, its requirements with their current answers, and counts by status. 404 if you can't open it |
 | `PATCH /projects/{id}` | Rename, or change who it is shared with (owner or admin) |
 | `DELETE /projects/{id}` | Delete it with all its answers and history (owner or admin) |
-| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder or has conflicting evidence cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
+| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder, has conflicting evidence, or has a claim its evidence does not support cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
 | `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
 | `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
 | `POST /projects/{id}/draft` | Draft the project in the background (202). Body: `client_id`, `kb_project_id` (the knowledge-base project segment to search), optional `solution_area`, `tone`, `approach`, `context`, `allow_web_search`, and `rids` to redo specific requirements |
-| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person) and `failed` |
+| `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person), `failed` and `flagged` (answers with a claim the verifier found unsupported or contradicted) |
 | `POST /projects/{id}/draft/cancel` | Ask the running draft to stop (whoever started it, the project owner or an admin). Answers already saved are kept |
 
 **Drafting a project.** Each answer is written to the ledger as a new answer version the moment the model produces it
@@ -740,7 +740,14 @@ each one. Then, independently of the writer:
 Each answer carries `claims` (text, evidence ids, verdict, reason, whether a rule or the verifier decided) and a
 `verification` summary: `verified` (all claims supported), `partially_verified`, `flagged` (an unsupported or
 contradicted claim) or `unchecked` (no claims listed, verification off, or the verifier could not be reached: a verifier
-outage never fails a draft). Evidence entries get ids and a `quote_verified` flag. Nothing is rewritten or removed: a
+outage never fails a draft). Evidence entries get ids and a `quote_verified` flag. A project stores every claim with its evidence ids, verdict, reason
+and whether a rule or the verifier decided, with each answer version (and so in its history); the requirement carries the
+status, and **an answer whose status is `flagged` cannot be approved** (409). Writing the answer yourself clears it (the
+text is then yours, and nothing in it was machine-checked), and restoring an earlier version brings its claims and status
+back. The audit trail records the status, never the claims. The Word document and the compliance matrix show each
+answer's verification (the matrix's last column, with flagged claims in the notes), and the page shows a badge, the
+claims (flagged ones open, with the reason and the evidence they cite) and a warning on any quote that was not found in
+its source. Nothing is rewritten or removed: a
 contradicted claim makes the answer `conflicting_evidence`, an unsupported one downgrades `fully_answered` to
 `partially_answered`, and every flagged claim is listed under the answer's risks, so the Word document, the matrix and
 the UI show it. Placeholders and failures have nothing to verify. A claim that rests only on a web source can't be

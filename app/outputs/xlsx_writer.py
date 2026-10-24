@@ -1,7 +1,7 @@
 """Generate XLSX Compliance Matrix from agent draft output.
 
 Columns:
-  Requirement ID | Requirement Text | Priority | Meets (Yes/Partial/No) | Evidence/Notes | Source URL | Answer state
+  Requirement ID | Requirement Text | Priority | Meets (Yes/Partial/No) | Evidence/Notes | Source URL | Answer state | Verification
 
 A requirement that is waiting for a person (no evidence, pricing, legal) has an empty Meets cell: nothing is claimed.
 """
@@ -17,7 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from app.agents import states
+from app.agents import states, verify
 from app.ingestion.provenance import describe_source
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,8 @@ _COLUMNS = [
     ("Meets (Yes/Partial/No)", 24),
     ("Evidence / Notes", 50),
     ("Source URL", 40),
-    ("Answer state", 22),  # last, so the columns existing workflows read keep their positions
+    ("Answer state", 22),  # these two are last, so the columns existing workflows read keep their positions
+    ("Verification", 30),
 ]
 
 
@@ -95,11 +96,13 @@ def generate_xlsx(
 
         if resp.get("missing"):
             evidence_parts.append(f"Missing: {resp['missing']}")
+        for flagged in [c for c in resp.get("claims") or [] if c.get("verdict") in verify.FLAGGED_VERDICTS][:3]:
+            evidence_parts.append(f"{flagged['verdict'].capitalize()} claim: {flagged.get('text', '')}")
         evidence_text = "; ".join(evidence_parts) if evidence_parts else ""
         source_url_text = "\n".join(source_urls) if source_urls else ""
 
         state = states.LABELS.get(str(resp.get("state", "")), "")
-        row_data = [req_id, req_text, priority, meets, evidence_text, source_url_text, state]
+        row_data = [req_id, req_text, priority, meets, evidence_text, source_url_text, state, verify.describe(resp.get("verification"))]
         for col_idx, value in enumerate(row_data, start=1):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = Alignment(vertical="top", wrap_text=True)

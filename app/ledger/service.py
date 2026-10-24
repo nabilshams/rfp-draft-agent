@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.agents import states
+from app.agents import states, verify
 from app.agents.normalize import normalize_answer
 from app.auth.access import can_manage, is_admin, resolve_share_groups
 from app.auth.entra import UserClaims
@@ -177,6 +177,7 @@ def _requirement_docs(project_id: str, requirements: list[dict[str, Any]], actor
             "status": "extracted",
             "state": "",
             "missing": "",
+            "verification": "",
             "answer_version": 0,
             "answer": None,
             "rev": 1,
@@ -385,6 +386,13 @@ def update_requirement(
     if recorded.get("status", {}).get("to") == "approved":
         if not requirement.get("answer_version"):
             raise HTTPException(status_code=409, detail="There is no answer to approve yet")
+        if requirement.get("verification") == verify.FLAGGED:
+            flagged = sum((requirement.get("answer") or {}).get("verification", {}).get(v, 0) for v in verify.FLAGGED_VERDICTS)
+            raise HTTPException(
+                status_code=409,
+                detail=f"{flagged or 'Some'} claim(s) in this answer are not supported by their evidence. "
+                "Edit the answer, or draft it again, before approving.",
+            )
         current = requirement.get("state")
         if current and current not in states.APPROVABLE:
             raise HTTPException(
@@ -415,6 +423,7 @@ def update_requirement(
 
 _EVIDENCE_KEYS = ("title", "source_url", "quote", "source_type", "authority", "effective_date", "version",
                   "approval_status", "section")
+MAX_CLAIMS = verify.MAX_CLAIMS
 MAX_EVIDENCE = 20
 
 
@@ -431,7 +440,47 @@ def _evidence(value: Any) -> list[dict[str, Any]]:
         item.update({k: str(entry[k])[:200] for k in _EVIDENCE_KEYS[3:] if entry.get(k) not in (None, "")})
         if isinstance(entry.get("page"), int) and not isinstance(entry.get("page"), bool):
             item["page"] = entry["page"]
+        if entry.get("id"):  # what the answer's claims refer to
+            item["id"] = str(entry["id"])[:10]
+        if isinstance(entry.get("quote_verified"), bool):  # whether the quote was found in the source it cites
+            item["quote_verified"] = entry["quote_verified"]
         kept.append(item)
+    return kept
+
+
+def _claims(value: Any) -> list[dict[str, Any]]:
+    """The claims of an answer as the ledger keeps them: text, the evidence ids that support it, and the verdict."""
+    if not isinstance(value, list):
+        return []
+    kept: list[dict[str, Any]] = []
+    for claim in value[:MAX_CLAIMS]:
+        text = str(claim.get("text") or "")[:verify.MAX_CLAIM_CHARS] if isinstance(claim, dict) else ""
+        if not text:
+            continue
+        ids = claim.get("evidence_ids")
+        verdict = claim.get("verdict")
+        kept.append({
+            "id": str(claim.get("id") or f"C{len(kept) + 1}")[:10],
+            "text": text,
+            "evidence_ids": [str(i)[:10] for i in (ids if isinstance(ids, list) else [])[:10] if isinstance(i, str)],
+            "verdict": verdict if verdict in verify.VERDICTS else None,
+            "reason": str(claim.get("reason") or "")[:verify.MAX_REASON_CHARS],
+            "checked_by": claim.get("checked_by") if claim.get("checked_by") in ("rule", "model") else "",
+        })
+    return kept
+
+
+def _verification(value: Any) -> dict[str, Any]:
+    """An answer's overall verification as the ledger keeps it (empty when there is none)."""
+    if not isinstance(value, dict) or value.get("status") not in verify.STATUSES:
+        return {}
+    kept: dict[str, Any] = {"status": value["status"]}
+    for key in ("claims", "unchecked", "by_rule", *verify.VERDICTS):
+        number = value.get(key)
+        kept[key] = number if isinstance(number, int) and not isinstance(number, bool) and number >= 0 else 0
+    for key in ("model", "reason"):
+        if value.get(key):
+            kept[key] = str(value[key])[:200]
     return kept
 
 
@@ -474,6 +523,10 @@ def add_answer(
             status_code=422, detail="This answer is still the placeholder. Write the answer, or leave it as it is."
         )
     state = _state_of(content, answer, source=source, restored=restored_from is not None)
+    # A model answer's claims and their verdicts, and a restored version's, stay with the answer. Text a person writes
+    # was not checked by the verifier: it carries none, which also lifts the block on a flagged draft.
+    carries_claims = source == "model" or restored_from is not None
+    verification = _verification(content.get("verification")) if carries_claims else {}
     document: Doc = {
         "id": _answer_doc_id(rid, version),
         "kind": "answer",
@@ -489,6 +542,8 @@ def add_answer(
         "kb_evidence_found": bool(content.get("kb_evidence_found", False)),
         "state": state,
         "missing": str(content.get("missing") or "")[:300] if state != states.FULLY else "",
+        "claims": _claims(content.get("claims")) if carries_claims else [],
+        "verification": verification,
         "source": source,
         "author": actor.oid,
         "author_name": actor.name,
@@ -504,12 +559,14 @@ def add_answer(
         status="needs_input" if state in states.PLACEHOLDER_STATES else ("drafted" if source == "model" else "edited"),
         state=state,
         missing=document["missing"],
+        verification=verification.get("status", ""),
         rev=requirement["rev"] + 1,
         updated_at=now,
         updated_by=actor.oid,
     )
     event = new_event(
         project_id, actor, "answer.added", rid, version=version, source=source, state=state,
+        **({"verification": verification["status"]} if verification else {}),
         **({"restored_from": restored_from} if restored_from is not None else {}),
         **({"job_id": job_id} if job_id else {}),
     )
