@@ -409,7 +409,14 @@ def update_requirement(
             recorded[field] = {"from": requirement.get(field), "to": value}
     if not recorded:
         return _out(requirement)
-    side_effects = _regroup(store, project_id, requirement, recorded)
+    actor = Actor.of(user)
+    side_effects = _regroup(store, project_id, requirement, recorded, actor)
+    became_unanswered = "item_kind" in recorded and not is_answered({"item_kind": recorded["item_kind"]["to"]})
+    if recorded.get("status", {}).get("to") == "approved" and (became_unanswered or not is_answered(requirement)):
+        raise HTTPException(status_code=409, detail="This item is not answered in the response, so there is nothing to approve")
+    if became_unanswered and requirement.get("status") != "extracted" and "status" not in recorded:
+        # No longer an answer to approve: the status goes back to what an item with no answer has (its versions stay)
+        recorded["status"] = {"from": requirement.get("status"), "to": "extracted"}
     if recorded.get("status", {}).get("to") == "approved":
         if not requirement.get("answer_version"):
             raise HTTPException(status_code=409, detail="There is no answer to approve yet")
@@ -430,7 +437,6 @@ def update_requirement(
 
     for field, change in recorded.items():
         requirement[field] = change["to"]
-    actor = Actor.of(user)
     requirement.update(rev=requirement["rev"] + 1, updated_at=_now(), updated_by=actor.oid)
     try:
         store.apply(
@@ -443,6 +449,11 @@ def update_requirement(
         )
     except Conflict:
         raise _conflict() from None
+    if recorded.get("duplicate_of", {}).get("to"):  # grouped under an item that is already answered: it has that answer now
+        try:
+            fill_repeats(store, settings, project_id, actor)
+        except Exception:
+            logger.exception("Could not copy the answer to %s; the next draft will", rid)
     return _out(_load_requirement(store, project_id, rid))
 
 
@@ -473,12 +484,13 @@ def confirm_extraction(store: LedgerStore, settings: Settings, user: UserClaims,
     return _summary(load_project(store, project_id, user, settings), user, settings)
 
 
-def _regroup(store: LedgerStore, project_id: str, requirement: Doc, recorded: dict[str, Any]) -> list[Any]:
+def _regroup(store: LedgerStore, project_id: str, requirement: Doc, recorded: dict[str, Any], actor: Actor) -> list[Any]:
     """Keep repeats consistent when a person changes what an item is. Returns the writes for the items affected.
 
     A repeat points at the first item only, and only an answered item can be repeated or repeated *of*. Moving an item
-    under another takes its own repeats with it; an item that stops being answered releases its repeats. Called before
-    the change is applied, so *recorded* holds the new values and *requirement* still the old ones.
+    under another takes its own repeats with it; an item that stops being answered releases them. Changing only an item's
+    kind (still answered) leaves its repeats alone. Each item moved is recorded in the audit trail.
+    Called before the change is applied, so *recorded* holds the new values and *requirement* still the old ones.
     """
     if "item_kind" not in recorded and "duplicate_of" not in recorded:
         return []
@@ -489,9 +501,8 @@ def _regroup(store: LedgerStore, project_id: str, requirement: Doc, recorded: di
         if recorded.get("duplicate_of", {}).get("to"):
             raise HTTPException(status_code=422, detail="Only an item that is answered (a question or requirement) can be a repeat")
         # An item that stops being answered stops being a repeat
-        recorded["duplicate_of"] = {"from": requirement.get("duplicate_of", ""), "to": ""}
-        if recorded["duplicate_of"]["from"] == "":
-            del recorded["duplicate_of"]
+        if requirement.get("duplicate_of"):
+            recorded["duplicate_of"] = {"from": requirement["duplicate_of"], "to": ""}
         target = ""
     else:
         target = recorded["duplicate_of"]["to"] if "duplicate_of" in recorded else requirement.get("duplicate_of", "")
@@ -503,13 +514,50 @@ def _regroup(store: LedgerStore, project_id: str, requirement: Doc, recorded: di
             raise HTTPException(status_code=422, detail="Only an item that is answered (a question or requirement) can be a repeat")
         if first.get("duplicate_of"):
             raise HTTPException(status_code=422, detail=f"{target} is itself a repeat of {first['duplicate_of']}: group with that one")
-    writes = []
+    if answered and "duplicate_of" not in recorded:
+        return []  # only the kind changed, and it is still answered: the repeats stay where they are
+    writes: list[Any] = []
     for member in store.query(project_id, "requirement"):
         if member.get("duplicate_of") == rid:  # this item's own repeats follow it to its new first item, or are released
-            member["duplicate_of"] = target
-            member["rev"] = member["rev"] + 1
+            changes = {"duplicate_of": {"from": rid, "to": target}}
+            member.update(duplicate_of=target, rev=member["rev"] + 1, updated_at=_now(), updated_by=actor.oid)
             writes.append(ledger_store.replace(member))
+            writes.append(ledger_store.create(new_event(
+                project_id, actor, "requirement.updated", member["rid"], changes=changes, because=rid)))
     return writes
+
+
+def copy_answer(
+    store: LedgerStore, settings: Settings, project_id: str, first: Doc, repeat: Doc, actor: Actor, job_id: str = ""
+) -> bool:
+    """Give a repeat the current answer of its first item (a new version, marked ``reused_from``). ``False`` if it can't.
+
+    A repeat that already has an answer keeps it: a person's answer, an approved one, or an earlier copy.
+    """
+    answer = first.get("answer")
+    if not answer or repeat.get("answer_version"):
+        return False
+    content = {k: v for k, v in answer.items() if k in (
+        "answer_markdown", "meets", "evidence", "assumptions", "risks", "followups", "kb_evidence_found", "state", "missing",
+        "claims", "verification", "confidence")}
+    source = answer.get("source", "user")
+    try:
+        add_answer(store, settings, project_id, repeat["rid"], {**content, "reused_from": first["rid"]},
+                   actor=AGENT if source == "model" else actor, source=source, job_id=job_id, expected_rev=repeat["rev"])
+    except HTTPException:
+        return False  # changed meanwhile: the next draft tries again
+    return True
+
+
+def fill_repeats(store: LedgerStore, settings: Settings, project_id: str, actor: Actor, job_id: str = "") -> int:
+    """Give every repeat that has no answer the answer of its first item, where the first has one. Returns how many."""
+    docs = {d["rid"]: d for d in store.query(project_id, "requirement")}
+    return sum(
+        1
+        for repeat in docs.values()
+        if repeat.get("duplicate_of") and not repeat.get("answer_version") and repeat["duplicate_of"] in docs
+        and copy_answer(store, settings, project_id, docs[repeat["duplicate_of"]], repeat, actor, job_id)
+    )
 
 # ── Answers ──────────────────────────────────────────────
 
@@ -651,7 +699,7 @@ def add_answer(
         "assumptions": answer["assumptions"],
         "risks": answer["risks"],
         "followups": answer["followups"],
-        **({"reused_from": str(content["reused_from"])[:64]} if source == "model" and content.get("reused_from") else {}),
+        **({"reused_from": str(content["reused_from"])[:64]} if content.get("reused_from") else {}),
         "kb_evidence_found": bool(content.get("kb_evidence_found", False)),
         "state": state,
         "missing": str(content.get("missing") or "")[:300] if state != states.FULLY else "",

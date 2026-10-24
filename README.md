@@ -347,9 +347,14 @@ RFP's `deadlines` (with ISO dates), `submission_rules` and `extraction` (`method
 - **A repeated question is answered once.** The first item is drafted; when its answer is saved each repeat gets the same
   answer as a new version (`answer.reused_from`), including its evidence, claims and confidence. A repeat a person has
   answered or approved keeps their answer; a repeat whose answer is a model's is replaced when the first is redrafted.
-  Name a repeat in `rids` to draft it on its own, or ungroup it (`duplicate_of: ""`). Grouping is edited in the ledger:
-  an item can only repeat an *answered* first item, never another repeat; moving an item moves its repeats with it, and
-  an item that stops being answered releases them.
+  A repeat is never left empty: grouping an item under one that already has an answer copies it at once, and a draft
+  starts by giving every repeat whose first item is answered (by the model or by a person) that answer; a copy that fails
+  is retried then, and never fails the draft. Name a repeat in `rids` to draft it on its own, or ungroup it
+  (`duplicate_of: ""`). Grouping is edited in the ledger: an item can only repeat an item that is *answered* (a kind),
+  never another repeat; moving an item moves its repeats with it (each recorded in the audit trail), changing only an
+  item's kind leaves its repeats alone, and an item that stops being answered releases them. An item changed to something
+  that is not answered goes back to "no answer" (its versions stay, and it leaves the documents); one that is not answered
+  cannot be approved.
 - **Review before drafting a model-read project.** A project created with `"extractor": "ai"` starts unconfirmed: edit
   anything the model got wrong (kind, response type, repeats, text), then `POST /projects/{id}/confirm-extraction`
   (recorded in the audit trail). Drafting it before that is a 409. Projects read by the patterns, or created from

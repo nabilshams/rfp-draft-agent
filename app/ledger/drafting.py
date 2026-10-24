@@ -118,7 +118,9 @@ class ProjectSink:
                     raise
                 if self._is_ours(rid):  # a retry of a write that had in fact gone through
                     self.written.append(rid)
-                    return {"type": "saved", "data": {"requirement_id": rid, "version": self._current_version(rid)}}
+                    reused = self._reuse(rid, response)
+                    return {"type": "saved", "data": {"requirement_id": rid, "version": self._current_version(rid),
+                                                      **({"reused_by": reused} if reused else {})}}
                 self.changed.append(rid)
                 logger.info("Draft %s did not save %s: it was changed while the draft ran", self._job_id, rid)
                 return self._not_saved(rid, "changed")
@@ -155,6 +157,10 @@ class ProjectSink:
             except HTTPException:
                 logger.info("Draft %s did not copy %s to %s: it changed meanwhile", self._job_id, rid, member["rid"])
                 continue
+            except (HttpResponseError, ServiceRequestError):
+                # Not worth failing the draft over: the next draft (or a regroup) copies it
+                logger.warning("Draft %s could not copy %s to %s", self._job_id, rid, member["rid"], exc_info=True)
+                continue
             taken.append(member["rid"])
         if taken:
             self.reused[rid] = taken
@@ -183,7 +189,7 @@ class ProjectSink:
         responses = [
             response_of(d) if d.get("answer") else states.failed_answer(_strategy_requirement(d), message="Drafting failed", risk="")
             for d in docs
-            if d.get("answer") or d.get("state") == states.FAILED
+            if service.is_answered(d) and (d.get("answer") or d.get("state") == states.FAILED)
         ]
         return responses, [_strategy_requirement(d) for d in docs]
 
@@ -271,6 +277,9 @@ def start(
     if _is_starting(settings, project):
         raise HTTPException(status_code=409, detail="A draft is just starting for this project.")
 
+    # A repeat whose first item is already answered takes that answer (grouped after it was answered, or a copy that
+    # failed earlier): drafting skips repeats, so nothing else would fill it
+    service.fill_repeats(store, settings, project_id, service.Actor.of(user))
     selection = select(store, project_id, rids)
     job_id = uuid.uuid4().hex
     actor = service.Actor.of(user)

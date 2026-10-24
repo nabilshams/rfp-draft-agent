@@ -296,3 +296,111 @@ def test_the_answer_states_and_the_item_kinds_are_separate_vocabularies():
 
     assert not set(states.STATES) & set(classify.KINDS)
     assert pytest is not None
+
+# ── Found in review ──────────────────────────────────────
+
+
+class TestRepeatsAreNeverLeftEmpty:
+    async def test_grouping_an_item_under_one_that_is_already_answered_gives_it_that_answer(self, api, worker, script):  # noqa: F811
+        project = await make_project(api, requirements=[
+            {"id": "R1", "text": "Describe your support model for customers."},
+            {"id": "R2", "text": "Describe your approach to data migration projects."}])
+        await draft(api, worker, project, body={"rids": ["R1"]})  # R2 has no answer yet
+
+        grouped = await api.patch(url(project, "requirements/R2"), json={"duplicate_of": "R1"}, headers=A)
+
+        assert grouped.status_code == 200
+        items = by_rid(await state_of(api, project))
+        assert items["R2"]["answer"]["answer_markdown"] == "Answer for R1." and items["R2"]["answer"]["reused_from"] == "R1"
+        assert items["R2"]["answer"]["source"] == "model" and items["R2"]["answer"]["author"] == "agent"
+
+    async def test_a_persons_answer_to_the_first_is_copied_to_a_repeat_at_the_next_draft(self, api, worker, script):  # noqa: F811
+        project = await make_project(api, requirements=REQS)
+        await api.post(url(project, "requirements/R1/answers"), json={"answer_markdown": "Hand-written."}, headers=A)
+
+        await draft(api, worker, project)  # R2 is drafted; R3 (the repeat of R1) takes the person's answer
+
+        items = by_rid(await state_of(api, project))
+        assert items["R3"]["answer"]["answer_markdown"] == "Hand-written." and items["R3"]["answer"]["reused_from"] == "R1"
+        assert items["R3"]["answer"]["source"] == "user" and items["R3"]["answer"]["author"] == "user-a"
+        assert script.drafted() == ["R2"]
+
+    async def test_when_only_a_repeat_was_missing_a_draft_fills_it_instead_of_saying_nothing_to_draft(self, api, worker, script):  # noqa: F811
+        project = await make_project(api, requirements=REQS)
+        await draft(api, worker, project)
+        stored = ledger_store.store_for(api_settings())
+        pid = project["project"]["id"]
+        repeat, copy = stored.get(pid, "req:R3"), stored.get(pid, "ans:R3:00001")
+        repeat.update(answer=None, answer_version=0, status="extracted")  # as if its copy had never been written
+        stored.apply(pid, [ledger_store.replace(repeat), ledger_store.delete(copy)])
+
+        response = await api.post(url(project, "draft"), json={"client_id": "acme", "kb_project_id": "p1"}, headers=A)
+
+        assert response.status_code == 409  # nothing left to draft...
+        assert by_rid(await state_of(api, project))["R3"]["answer"]["answer_markdown"] == "Answer for R1."  # ...and it is filled
+
+    async def test_a_copy_that_fails_does_not_fail_the_draft(self, api, worker, script, monkeypatch):  # noqa: F811
+        from azure.core.exceptions import HttpResponseError
+
+        from app.ledger import service
+
+        real = service.add_answer
+
+        def flaky(*args, **kwargs):
+            if args[3] == "R3":
+                raise HttpResponseError(message="cosmos is busy")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(service, "add_answer", flaky)
+        project = await make_project(api, requirements=REQS)
+        await draft(api, worker, project)
+
+        items = by_rid(await state_of(api, project))
+        assert items["R1"]["answer"] is not None and items["R3"]["answer"] is None
+        monkeypatch.setattr(service, "add_answer", real)
+        await api.patch(url(project, "requirements/R2"), json={"item_kind": "optional"}, headers=A)
+        response = await api.post(url(project, "draft"), json={"client_id": "acme", "kb_project_id": "p1"}, headers=A)
+        assert response.status_code == 409  # the next draft's first act is to copy it
+        assert by_rid(await state_of(api, project))["R3"]["answer"]["answer_markdown"] == "Answer for R1."
+
+
+class TestChangingTheKindOfAFirstItem:
+    async def test_changing_only_the_kind_of_a_first_item_leaves_its_repeats_grouped(self, api):  # noqa: F811
+        project = await make_project(api, requirements=REQS)  # R3 repeats R1
+        await api.patch(url(project, "requirements/R1"), json={"item_kind": "optional"}, headers=A)
+        await api.patch(url(project, "requirements/R1"), json={"item_kind": "question"}, headers=A)
+        assert by_rid(await state_of(api, project))["R3"]["duplicate_of"] == "R1"
+
+    async def test_moving_or_releasing_repeats_is_recorded_for_each_of_them(self, api):  # noqa: F811
+        project = await make_project(api, requirements=REQS)  # R3 repeats R1
+        await api.patch(url(project, "requirements/R1"), json={"item_kind": "instruction"}, headers=A)
+        events = (await api.get(url(project, "events"), params={"rid": "R3"}, headers=A)).json()["events"]
+        moved = next(e for e in events if e["action"] == "requirement.updated")
+        assert moved["details"]["changes"]["duplicate_of"] == {"from": "R1", "to": ""} and moved["details"]["because"] == "R1"
+        assert by_rid(await state_of(api, project))["R3"]["updated_by"] == "user-a"
+
+
+class TestAnItemThatIsNotAnsweredHasNothingToApprove:
+    async def test_it_cannot_be_approved(self, api):  # noqa: F811
+        project = await make_project(api, requirements=REQS)
+        assert (await api.patch(url(project, "requirements/R4"), json={"status": "approved"}, headers=A)).status_code == 409
+
+    async def test_changing_an_answered_item_to_something_not_answered_takes_its_status_back(self, api, worker, script):  # noqa: F811
+        project = await make_project(api, requirements=REQS)
+        await draft(api, worker, project)
+        await api.patch(url(project, "requirements/R2"), json={"status": "approved"}, headers=A)
+
+        changed = await api.patch(url(project, "requirements/R2"), json={"item_kind": "deadline"}, headers=A)
+
+        assert changed.json()["status"] == "extracted" and changed.json()["item_kind"] == "deadline"
+        state = await state_of(api, project)
+        assert state["counts"]["approved"] == 0
+
+    async def test_what_is_not_answered_is_left_out_of_the_documents(self, api, worker, script):  # noqa: F811
+        project = await make_project(api, requirements=REQS)
+        await draft(api, worker, project)
+        await api.patch(url(project, "requirements/R2"), json={"item_kind": "instruction"}, headers=A)
+        sink = drafting.ProjectSink(
+            ledger_store.store_for(api_settings()), api_settings(), project["project"]["id"], "j",
+            drafting.select(ledger_store.store_for(api_settings()), project["project"]["id"], ["R1"]))
+        assert {r["requirement_id"] for r in sink.document_inputs()[0]} == {"R1", "R3"}
