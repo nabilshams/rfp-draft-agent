@@ -56,6 +56,8 @@ def _strategy_requirement(doc: Doc) -> dict[str, Any]:
         "category": doc.get("category", "general"),
         "priority": doc.get("priority", "standard"),
         "source_section": doc.get("source_section", ""),
+        "kind": doc.get("item_kind") or ("question" if doc.get("type") == "question" else "mandatory"),
+        "response_type": doc.get("response_type", ""),
     }
 
 
@@ -69,7 +71,9 @@ def select(store: LedgerStore, project_id: str, rids: list[str] | None) -> Selec
             raise HTTPException(status_code=404, detail=f"No such requirement: {', '.join(unknown[:5])}")
         chosen = [d for d in docs if d["rid"] in set(rids)]
     else:
-        chosen = [d for d in docs if not d.get("answer_version")]
+        # What a draft works on by default: answered kinds without an answer, and not a repeat (it takes the first
+        # one's answer). Instructions, dates and submission rules are not drafted.
+        chosen = [d for d in docs if not d.get("answer_version") and service.is_answered(d) and not service.is_repeat(d)]
     if not chosen:
         raise HTTPException(status_code=409, detail="Nothing to draft: every requirement already has an answer.")
     return Selection([_strategy_requirement(d) for d in chosen], {d["rid"]: d["rev"] for d in chosen})
@@ -85,6 +89,7 @@ class ProjectSink:
         self._store, self._settings = store, settings
         self._project_id, self._job_id = project_id, job_id
         self._revs = dict(selection.revs)
+        self.reused: dict[str, list[str]] = {}  # first item -> the repeats that took its answer
         self.written: list[str] = []
         self.changed: list[str] = []  # not saved: somebody edited the requirement while the draft ran
         self.failed: list[str] = []  # not saved: the model could not produce an answer
@@ -113,7 +118,9 @@ class ProjectSink:
                     raise
                 if self._is_ours(rid):  # a retry of a write that had in fact gone through
                     self.written.append(rid)
-                    return {"type": "saved", "data": {"requirement_id": rid, "version": self._current_version(rid)}}
+                    reused = self._reuse(rid, response)
+                    return {"type": "saved", "data": {"requirement_id": rid, "version": self._current_version(rid),
+                                                      **({"reused_by": reused} if reused else {})}}
                 self.changed.append(rid)
                 logger.info("Draft %s did not save %s: it was changed while the draft ran", self._job_id, rid)
                 return self._not_saved(rid, "changed")
@@ -124,8 +131,40 @@ class ProjectSink:
                 time.sleep(0.5 * attempt)
             else:
                 self.written.append(rid)
-                return {"type": "saved", "data": {"requirement_id": rid, "version": requirement["answer_version"]}}
+                reused = self._reuse(rid, response)
+                return {"type": "saved", "data": {"requirement_id": rid, "version": requirement["answer_version"],
+                                                  **({"reused_by": reused} if reused else {})}}
         return None  # pragma: no cover - the loop always returns or raises
+
+    def _reuse(self, rid: str, response: dict[str, Any]) -> list[str]:
+        """Give each repeat of *rid* the answer it just got, so one question is answered once and consistently.
+
+        A repeat that a person has answered, edited or approved keeps their answer; a repeat whose answer is itself a
+        model's (an earlier reuse, or one drafted before it was grouped) is replaced.
+        """
+        taken: list[str] = []
+        for member in self._store.query(self._project_id, "requirement", order_by="order"):
+            if member.get("duplicate_of") != rid:
+                continue
+            answer = member.get("answer") or {}
+            if member.get("answer_version") and (answer.get("source") != "model" or member.get("status") == "approved"):
+                continue
+            try:
+                service.add_answer(
+                    self._store, self._settings, self._project_id, member["rid"], {**response, "reused_from": rid},
+                    actor=service.AGENT, source="model", job_id=self._job_id, expected_rev=member["rev"],
+                )
+            except HTTPException:
+                logger.info("Draft %s did not copy %s to %s: it changed meanwhile", self._job_id, rid, member["rid"])
+                continue
+            except (HttpResponseError, ServiceRequestError):
+                # Not worth failing the draft over: the next draft (or a regroup) copies it
+                logger.warning("Draft %s could not copy %s to %s", self._job_id, rid, member["rid"], exc_info=True)
+                continue
+            taken.append(member["rid"])
+        if taken:
+            self.reused[rid] = taken
+        return taken
 
     def _mark_failed(self, rid: str) -> None:
         """Show the requirement as failed (best effort: a conflict means somebody just changed it, which wins)."""
@@ -150,7 +189,7 @@ class ProjectSink:
         responses = [
             response_of(d) if d.get("answer") else states.failed_answer(_strategy_requirement(d), message="Drafting failed", risk="")
             for d in docs
-            if d.get("answer") or d.get("state") == states.FAILED
+            if service.is_answered(d) and (d.get("answer") or d.get("state") == states.FAILED)
         ]
         return responses, [_strategy_requirement(d) for d in docs]
 
@@ -158,7 +197,7 @@ class ProjectSink:
         event = service.new_event(
             self._project_id, service.AGENT, "draft.finished",
             job_id=self._job_id, outcome=outcome, saved=len(self.written),
-            changed_meanwhile=len(self.changed), failed=len(self.failed),
+            changed_meanwhile=len(self.changed), failed=len(self.failed), reused=sum(len(v) for v in self.reused.values()),
         )
         self._store.apply(self._project_id, [ledger_store.create(event)])
 
@@ -179,6 +218,7 @@ def response_of(requirement: Doc) -> dict[str, Any]:
         "state": requirement.get("state", ""),
         "missing": requirement.get("missing", ""),
         "claims": answer.get("claims", []),
+        "reused_from": answer.get("reused_from", ""),
         "verification": answer.get("verification", {}),
         "confidence": answer.get("confidence", {}),
     }
@@ -226,12 +266,20 @@ def start(
 ) -> jobs.Job:
     """Start a draft of the project's unanswered requirements (or the named ones). 409 if one is already running."""
     project = service.load_project(store, project_id, user, settings)
+    if not (project.get("extraction") or {}).get("confirmed", True):
+        raise HTTPException(
+            status_code=409,
+            detail="Review the requirements the model extracted and confirm them first: it can misread an RFP.",
+        )
     running = _active_job(settings, project)
     if running:
         raise HTTPException(status_code=409, detail=f"A draft is already running for this project (job {running.id}).")
     if _is_starting(settings, project):
         raise HTTPException(status_code=409, detail="A draft is just starting for this project.")
 
+    # A repeat whose first item is already answered takes that answer (grouped after it was answered, or a copy that
+    # failed earlier): drafting skips repeats, so nothing else would fill it
+    service.fill_repeats(store, settings, project_id, service.Actor.of(user))
     selection = select(store, project_id, rids)
     job_id = uuid.uuid4().hex
     actor = service.Actor.of(user)
@@ -278,7 +326,7 @@ def status(store: LedgerStore, settings: Settings, user: UserClaims, project_id:
     """Where the project's drafting stands: the latest job, and how much is still to do."""
     project = service.load_project(store, project_id, user, settings)
     requirements = store.query(project_id, "requirement")
-    remaining = sum(1 for r in requirements if not r.get("answer_version"))
+    remaining = sum(1 for r in requirements if not r.get("answer_version") and service.is_answered(r) and not service.is_repeat(r))
     needs_input = sum(1 for r in requirements if r.get("status") == "needs_input")
     failed = sum(1 for r in requirements if r.get("state") == states.FAILED and not r.get("answer_version"))
     flagged = sum(1 for r in requirements if r.get("verification") == verify.FLAGGED)

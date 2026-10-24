@@ -201,3 +201,89 @@ class TestAnswerStates:
     def test_counts_include_the_requirements_that_need_input(self):
         html = render("r.countsHtml({extracted: 1, needs_input: 3}, 4)")
         assert "needs input" in html and "<strong>3</strong>" in html
+
+class TestItemTypes:
+    def test_a_requirement_shows_what_it_is_how_it_is_answered_and_what_it_asks_for(self):
+        html = block(requirement(item_kind="optional", response_type="table", evidence_required=True, implicit=True))
+        assert ">optional<" in html and ">table<" in html and ">evidence<" in html and ">inferred<" in html
+        plain = block(requirement(item_kind="mandatory"))  # a must is the ordinary case: no kind badge beside the priority
+        assert plain.count(">mandatory<") == 1
+
+    def test_a_question_and_a_yes_no_answer(self):
+        html = block(requirement(type="question", item_kind="question", response_type="yes_no"))
+        assert ">question<" in html and ">yes / no<" in html
+
+    def test_an_old_project_with_untyped_items_looks_as_it_did(self):
+        html = block(requirement())
+        assert "Not answered" not in html and 'data-action="edit-answer"' in html
+
+    def test_an_instruction_is_not_answered_and_says_so_and_offers_to_change_its_type(self):
+        html = block(requirement(item_kind="instruction", response_type="narrative"))
+        assert ">instruction<" in html and "Not answered: this is an instruction" in html
+        assert 'data-action="edit-type"' in html and 'data-action="edit-answer"' not in html
+        assert 'data-action="redraft"' not in html and "No answer yet" not in html and ">Not answered<" in html
+
+    @pytest.mark.parametrize("kind, words", [("evaluation_criterion", "an evaluation criterion"), ("deadline", "a deadline"),
+                                              ("submission_rule", "a submission rule")])
+    def test_each_kind_that_is_not_answered_is_named_properly(self, kind, words):
+        assert f"this is {words}" in block(requirement(item_kind=kind))
+
+    def test_a_repeat_says_which_it_repeats_and_offers_to_answer_it_separately(self):
+        html = block(requirement(rid="R3", duplicate_of="R1", status="drafted", answer_version=1,
+                                 answer=answer(reused_from="R1")))
+        assert ">same as R1<" in html and "The same question as <strong>R1</strong>" in html
+        assert 'data-action="ungroup"' in html and "AES-256 at rest." in html  # it shows the shared answer
+
+    def test_the_form_offers_the_lists_and_the_current_values(self):
+        html = render("r.itemTypeFormHtml(" + json.dumps(requirement(item_kind="optional", response_type="table",
+                                                                     evidence_required=True, duplicate_of="R9")) + ")")
+        assert '<option value="optional" selected>optional</option>' in html and '<option value="table" selected>table</option>' in html
+        assert 'class="type-evidence" checked' in html and 'value="R9"' in html and 'data-action="save-type"' in html
+        for kind in ("question", "mandatory", "instruction", "evaluation_criterion", "deadline", "submission_rule"):
+            assert f'value="{kind}"' in html
+
+    def test_everything_about_an_item_is_escaped(self):
+        html = block(requirement(duplicate_of=ATTACK, item_kind="x" + ATTACK, response_type=ATTACK))
+        form = render("r.itemTypeFormHtml(" + json.dumps(requirement(duplicate_of=ATTACK, response_type=ATTACK)) + ")")
+        assert ATTACK not in html and ATTACK not in form and "&lt;img" in html + form
+
+    def test_the_counts_name_what_is_not_answered_and_the_repeats(self):
+        html = render("r.countsHtml({extracted: 2, not_answered: 3, repeats: 1}, 6)")
+        assert "not answered" in html and "repeats" in html and "<strong>3</strong>" in html
+        assert "repeats" not in render("r.countsHtml({extracted: 2}, 2)")
+
+
+class TestProjectRecord:
+    PROJECT = {
+        "deadlines": [{"text": "Responses must be submitted by 30 November 2026.", "date": "2026-11-30", "anchor": "¶14"}],
+        "submission_rules": ["One electronic copy in PDF format shall be uploaded."],
+        "extraction": {"method": "ai", "confirmed": True, "warnings": ["1 item(s) the model listed were not found in the document and were dropped."],
+                       "coverage": {"chunks": 3}},
+    }
+
+    def record(self, project):
+        return render("r.projectRecordHtml(" + json.dumps(project) + ")")
+
+    def test_the_dates_the_rules_the_warnings_and_how_much_was_read_are_shown(self):
+        html = self.record(self.PROJECT)
+        assert "2026-11-30" in html and "Responses must be submitted" in html and "¶14" in html
+        assert "How to submit" in html and "One electronic copy" in html
+        assert "were not found in the document" in html and "read all 3 part(s)" in html
+        assert "Confirm the requirements" not in html
+
+    def test_a_model_read_project_asks_for_review_before_drafting(self):
+        html = self.record({**self.PROJECT, "extraction": {**self.PROJECT["extraction"], "confirmed": False}})
+        assert "Review what the model extracted" in html and 'data-action="confirm-extraction"' in html
+        assert "cannot be drafted until you do" in html
+
+    def test_a_date_that_could_not_be_read_says_so(self):
+        assert "no date found" in self.record({"deadlines": [{"text": "Closing soon.", "date": ""}]})
+
+    def test_a_project_with_nothing_to_show_shows_nothing(self):
+        assert self.record({"deadlines": [], "submission_rules": [], "extraction": {"method": "local", "confirmed": True}}) == ""
+        assert self.record(None) == ""
+
+    def test_it_is_escaped(self):
+        html = self.record({"deadlines": [{"text": ATTACK, "date": ATTACK, "anchor": ATTACK}], "submission_rules": [ATTACK],
+                            "extraction": {"confirmed": True, "warnings": [ATTACK]}})
+        assert ATTACK not in html and "&lt;img" in html

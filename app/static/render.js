@@ -180,29 +180,129 @@ function answerMetaHtml(answer) {
     esc(who) + restored + (answer.created_at ? ' &middot; ' + esc(formatTime(answer.created_at)) : '') + '</div>';
 }
 
+// What an item is (see app/ingestion/classify.py). Only the first three are answered; the rest shape the response.
+const ITEM_KINDS = {
+  question: 'question', mandatory: 'mandatory', optional: 'optional', instruction: 'instruction',
+  evaluation_criterion: 'evaluation criterion', deadline: 'deadline', submission_rule: 'submission rule',
+};
+const ANSWERED_KINDS = ['question', 'mandatory', 'optional'];
+const RESPONSE_TYPES = { narrative: 'narrative', yes_no: 'yes / no', table: 'table', attachment: 'attachment' };
+const isAnswered = req => !req.item_kind || ANSWERED_KINDS.includes(req.item_kind);
+const isRepeat = req => Boolean(req.duplicate_of);
+const withArticle = kind => (ITEM_KINDS[kind] ? (/^[aeiou]/.test(ITEM_KINDS[kind]) ? 'an ' : 'a ') + ITEM_KINDS[kind] : 'something else');
+
+/** The kind, how it is answered, whether evidence is asked for, whether it was inferred, and what it repeats. */
+function itemTagsHtml(req) {
+  const tag = (text, style, title) =>
+    '<span class="badge" style="margin-top:1px;' + style + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(text) + '</span>';
+  const parts = [];
+  const kind = req.item_kind || (req.type === 'question' ? 'question' : '');
+  if (kind === 'question') {
+    parts.push('<span class="badge" style="margin-top:1px;background:#fff4ce;color:#8a6d00">question</span>');
+  } else if (kind in ITEM_KINDS && kind !== 'mandatory') {
+    const answered = ANSWERED_KINDS.includes(kind);
+    parts.push(tag(ITEM_KINDS[kind], answered ? 'background:#f3f2f1;color:#605e5c' : 'background:#ede7f6;color:#5b3f9a',
+      answered ? 'Preferred, not a must' : 'Not answered: it shapes the response'));
+  }
+  if (isAnswered(req) && req.response_type in RESPONSE_TYPES && req.response_type !== 'narrative') {
+    parts.push(tag(RESPONSE_TYPES[req.response_type], 'background:#e6f0ff;color:#0f6cbd', 'How it is to be answered'));
+  }
+  if (req.evidence_required) parts.push(tag('evidence', 'background:#e8f5e9;color:var(--success)', 'The RFP asks for supporting evidence'));
+  if (req.implicit) parts.push(tag('inferred', 'background:#fff4ce;color:#8a6d00', 'Not stated outright: inferred from the text. Check it.'));
+  if (isRepeat(req)) parts.push(tag('same as ' + req.duplicate_of, 'background:#f3f2f1;color:#605e5c', 'A repeat: it takes the answer of the first'));
+  return parts.join('');
+}
+
+/** Where the item stands: its status, or why it has none (it is not answered, or it waits for the first of its group). */
+function progressBadgeHtml(req) {
+  const grey = 'background:#f3f2f1;color:#605e5c';
+  if (!isAnswered(req)) return '<span class="badge" style="' + grey + '">Not answered</span>';
+  if (isRepeat(req) && !req.answer) return '<span class="badge" style="' + grey + '">Waits for ' + esc(req.duplicate_of) + '</span>';
+  return statusBadgeHtml(req.status);
+}
+
+/** A note above a requirement that is not answered in the normal way. */
+function itemNoteHtml(req) {
+  if (!isAnswered(req)) {
+    return '<div style="font-size:11px;color:#5b3f9a;margin-bottom:6px">Not answered: this is ' + esc(withArticle(req.item_kind)) +
+      '. It shapes the response (an instruction goes to the drafting as guidance). If it is a requirement, change its type.</div>';
+  }
+  if (isRepeat(req)) {
+    return '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">The same question as <strong>' + esc(req.duplicate_of) +
+      '</strong>: it takes that answer, so it is answered once. <button class="btn btn-secondary btn-sm" data-action="ungroup" data-rid="' +
+      esc(req.rid) + '" data-rev="' + Number(req.rev) + '">Answer it separately</button></div>';
+  }
+  return '';
+}
+
+/** The form to say what an item is. */
+function itemTypeFormHtml(req) {
+  const options = (map, current) => Object.keys(map)
+    .map(k => '<option value="' + k + '"' + (k === current ? ' selected' : '') + '>' + esc(map[k]) + '</option>').join('');
+  const kind = req.item_kind || (req.type === 'question' ? 'question' : 'mandatory');
+  return '<div class="edit-form" style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#fff">' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:11px">' +
+    '<label style="margin:0">Kind <select class="type-kind" style="width:auto">' + options(ITEM_KINDS, kind) + '</select></label>' +
+    '<label style="margin:0">Answered as <select class="type-response" style="width:auto">' + options(RESPONSE_TYPES, req.response_type || 'narrative') + '</select></label>' +
+    '<label style="margin:0"><input type="checkbox" class="type-evidence"' + (req.evidence_required ? ' checked' : '') + '> evidence required</label>' +
+    '<label style="margin:0">Same as <input class="type-repeat" style="width:70px" maxlength="64" placeholder="R1" value="' + esc(req.duplicate_of || '') + '"></label>' +
+    '<span style="flex:1"></span>' +
+    '<button class="btn btn-primary btn-sm" data-action="save-type" data-rid="' + esc(req.rid) + '" data-rev="' + Number(req.rev) + '">Save</button>' +
+    '<button class="btn btn-secondary btn-sm" data-action="close-extra" data-rid="' + esc(req.rid) + '">Cancel</button></div></div>';
+}
+
+/** The project's dates, how to submit and how the RFP was read; with the confirm step for an RFP the model read. */
+function projectRecordHtml(project) {
+  if (!project) return '';
+  const extraction = project.extraction || {};
+  const list = items => '<ul style="margin:2px 0 0 16px;padding:0">' + items + '</ul>';
+  const deadlines = (project.deadlines || []).map(d =>
+    '<li style="font-size:12px"><strong>' + esc(d.date || 'no date found') + '</strong> ' + esc(d.text) +
+    (d.anchor ? ' <span style="color:var(--text-muted);font-size:10px">' + esc(d.anchor) + '</span>' : '') + '</li>').join('');
+  const rules = (project.submission_rules || []).map(r => '<li style="font-size:12px">' + esc(r) + '</li>').join('');
+  const warnings = (extraction.warnings || []).map(w => '<div style="font-size:11px;color:#8a6d00">&#9888; ' + esc(w) + '</div>').join('');
+  const parts = extraction.coverage && extraction.coverage.chunks ? Number(extraction.coverage.chunks) : 0;
+  const read = parts ? '<div style="font-size:11px;color:var(--text-muted)">The model read all ' + parts + ' part(s) of the document.</div>' : '';
+  const confirm = extraction.confirmed === false
+    ? '<div style="padding:8px 10px;border:1px solid #f0c36d;border-radius:6px;background:#fff8e1;margin-bottom:8px;font-size:12px">' +
+      '<strong>Review what the model extracted.</strong> It can misread an RFP: check each item\'s kind and text, fix anything wrong, then confirm. ' +
+      'The project cannot be drafted until you do. <button class="btn btn-primary btn-sm" data-action="confirm-extraction">Confirm the requirements</button></div>'
+    : '';
+  if (!confirm && !deadlines && !rules && !warnings) return '';
+  return confirm +
+    (deadlines ? '<div style="margin-bottom:6px"><strong style="font-size:12px">Dates</strong>' + list(deadlines) + '</div>' : '') +
+    (rules ? '<div style="margin-bottom:6px"><strong style="font-size:12px">How to submit</strong>' + list(rules) + '</div>' : '') +
+    warnings + read;
+}
+
 /** The action buttons under an answer. They carry data-action / data-rid; app code handles the clicks. */
 function requirementActionsHtml(req, running) {
   const rid = esc(req.rid);
   const button = (action, label, extra) =>
     '<button class="btn btn-secondary btn-sm" data-action="' + action + '" data-rid="' + rid + '"' + (extra || '') + '>' + label + '</button>';
+  if (!isAnswered(req)) {
+    return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + button('edit-type', 'Change type') + button('history', 'History') + '</div>';
+  }
   const parts = [button('edit-answer', req.answer ? 'Edit answer' : 'Write answer')];
   // Only an answer the sources support can be approved; a placeholder, a conflict or an answer with a claim its evidence
   // does not support needs a person to write or fix it first
   const approvable = (!req.state || ['fully_answered', 'partially_answered'].includes(req.state)) && req.verification !== 'flagged';
   if (req.answer && req.status !== 'approved' && approvable) parts.push(button('approve', 'Approve'));
   if (req.answer) parts.push(button('versions', 'Versions (' + Number(req.answer_version) + ')'));
+  parts.push(button('edit-type', 'Type'));
   parts.push(button('history', 'History'));
   parts.push(button('redraft', req.answer ? 'Redraft' : 'Draft this', running ? ' disabled title="A draft is running"' : ''));
   return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + parts.join('') + '</div>';
 }
 
 function requirementBodyHtml(req, running) {
-  const answer = req.answer
+  const note = itemNoteHtml(req);
+  const answer = !isAnswered(req) ? '' : req.answer
     ? answerMetaHtml(req.answer) + answerBodyHtml(req.answer)
     : (req.state === 'failed'
       ? '<em style="color:#a4262c">Drafting failed for this requirement. Draft again to retry.</em>'
       : '<em style="color:var(--text-muted)">No answer yet.</em>');
-  return answer + requirementActionsHtml(req, running) +
+  return note + answer + requirementActionsHtml(req, running) +
     '<div class="req-extra" data-for="' + esc(req.rid) + '"></div>';
 }
 
@@ -210,8 +310,7 @@ function requirementBodyHtml(req, running) {
 function projectRequirementHtml(req, running) {
   const category = req.category
     ? ' <span style="color:var(--text-muted);font-size:10px">[' + esc(req.category) + ']</span>' : '';
-  const kind = req.type === 'question'
-    ? '<span class="badge" style="margin-top:1px;background:#fff4ce;color:#8a6d00">question</span>' : '';
+  const kind = itemTagsHtml(req);
   const anchor = req.anchor
     ? '<span style="color:var(--text-muted);font-size:10px;white-space:nowrap" title="Where this is in the RFP">' + esc(req.anchor) + '</span>' : '';
   const assignee = req.assignee
@@ -221,7 +320,7 @@ function projectRequirementHtml(req, running) {
     '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
       '<span style="font-weight:700;color:var(--primary);min-width:40px;font-size:12px">' + esc(req.rid) + '</span>' +
       kind + '<span class="badge ' + priorityClass(req.priority) + '" style="margin-top:1px">' + esc(req.priority) + '</span>' + category +
-      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' + assignee + anchor + confidenceBadgeHtml(req.confidence) + statusBadgeHtml(req.status) +
+      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' + assignee + anchor + confidenceBadgeHtml(req.confidence) + progressBadgeHtml(req) +
     '</div>' +
     '<div class="req-response" id="' + esc(respDomId(req.rid)) + '" style="padding:10px 12px;font-size:12px">' +
       requirementBodyHtml(req, running) + '</div></div>';
@@ -230,7 +329,9 @@ function projectRequirementHtml(req, running) {
 function countsHtml(counts, total) {
   const item = (label, n, color) => '<span style="color:' + color + '"><strong>' + Number(n) + '</strong> ' + label + '</span>';
   return '<div style="display:flex;gap:14px;font-size:12px;flex-wrap:wrap">' +
-    item('no answer', counts.extracted || 0, 'var(--text-muted)') + item('drafted', counts.drafted || 0, '#0f6cbd') +
+    item('no answer', counts.extracted || 0, 'var(--text-muted)') +
+    (counts.repeats ? item('repeats', counts.repeats, 'var(--text-muted)') : '') +
+    (counts.not_answered ? item('not answered', counts.not_answered, '#5b3f9a') : '') + item('drafted', counts.drafted || 0, '#0f6cbd') +
     item('needs input', counts.needs_input || 0, '#a4262c') + item('flagged', counts.flagged || 0, '#a4262c') + item('low confidence', counts.low_confidence || 0, '#a4262c') +
     item('edited', counts.edited || 0, '#8a6d00') + item('approved', counts.approved || 0, 'var(--success)') +
     '<span style="color:var(--text-muted)">of ' + Number(total) + '</span></div>';
@@ -323,7 +424,7 @@ function projectListHtml(projects) {
 if (typeof module !== 'undefined') {
   module.exports = {
     meetsLabel, priorityClass, normReqId, respDomId, blockDomId, formatTime, evidenceItemHtml, answerBodyHtml,
-    statusBadgeHtml, stateBadgeHtml, verificationBadgeHtml, confidenceBadgeHtml, confidenceReasonsHtml, claimsHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
+    statusBadgeHtml, stateBadgeHtml, itemTagsHtml, itemNoteHtml, progressBadgeHtml, itemTypeFormHtml, projectRecordHtml, isAnswered, isRepeat, verificationBadgeHtml, confidenceBadgeHtml, confidenceReasonsHtml, claimsHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
     versionsHtml, describeEvent, eventsHtml, projectListHtml,
   };
 }

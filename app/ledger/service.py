@@ -27,7 +27,8 @@ from app.agents.normalize import normalize_answer
 from app.auth.access import can_manage, is_admin, resolve_share_groups
 from app.auth.entra import UserClaims
 from app.config import Settings
-from app.ingestion.rfp_extract import Requirement, assign_ids
+from app.ingestion import classify as states_kinds
+from app.ingestion.rfp_extract import Requirement, RFPExtractionResult, assign_ids, finalise
 from app.ledger import store as ledger_store
 from app.ledger.store import Conflict, Doc, LedgerStore, public
 
@@ -153,11 +154,14 @@ def _requirement_docs(project_id: str, requirements: list[dict[str, Any]], actor
             source_section=str(r.get("source_section") or "")[:200],
             anchor=str(r.get("anchor") or "")[:100],
             keywords=[str(k)[:64] for k in (r.get("keywords") or [])][:10],
+            **{k: r[k] for k in ("response_type", "evidence_required", "implicit", "duplicate_of") if k in r},
+            **({"kind": r["item_kind"]} if "item_kind" in r else {"kind": r["kind"]} if "kind" in r else {}),
         )
         for r in requirements
         if str(r.get("text", "")).strip()
     ]
     assign_ids(items)
+    finalise(RFPExtractionResult(requirements=items))  # repeats grouped (a reference to nothing dropped)
     return [
         {
             "id": req_doc_id(item.id),
@@ -170,6 +174,11 @@ def _requirement_docs(project_id: str, requirements: list[dict[str, Any]], actor
             "category": item.category,
             "priority": item.priority if item.priority in PRIORITIES else "standard",
             "anchor": item.anchor,
+            "item_kind": item.kind,  # (the document's own "kind" says it is a requirement document)
+            "response_type": item.response_type,
+            "evidence_required": item.evidence_required,
+            "implicit": item.implicit,
+            "duplicate_of": item.duplicate_of,
             "source_section": item.source_section,
             "keywords": item.keywords,
             "assignee": "",
@@ -200,8 +209,13 @@ def create_project(
     rfp_id: str | None = None,
     guidance: str = "",
     groups: list[str] | None = None,
+    extraction: RFPExtractionResult | None = None,
 ) -> Doc:
-    """Create a project with its requirements; returns the full state."""
+    """Create a project with its requirements; returns the full state.
+
+    *extraction* is how the RFP was read: its dates and submission rules go on the project, and a project read by the
+    model has to be confirmed by a person before it is drafted (the pattern-based reading needs no such step).
+    """
     shared = resolve_share_groups(groups or [], user, settings)
     actor = Actor.of(user)
     project_id = uuid.uuid4().hex
@@ -226,6 +240,17 @@ def create_project(
         "owner_name": actor.name,
         "groups": shared,
         "guidance": guidance,
+        "deadlines": [
+            {"text": str(d.get("text", ""))[:500], "date": str(d.get("date", ""))[:10], "anchor": str(d.get("anchor", ""))[:100]}
+            for d in (extraction.deadlines if extraction else [])[:20]
+        ],
+        "submission_rules": [str(r)[:500] for r in (extraction.submission_rules if extraction else [])[:20]],
+        "extraction": {
+            "method": extraction.method if extraction else "supplied",
+            "confirmed": not (extraction and extraction.method == "ai"),
+            "warnings": [str(w)[:300] for w in (extraction.warnings if extraction else [])[:10]],
+            "coverage": {k: v for k, v in (extraction.coverage if extraction else {}).items() if isinstance(v, int)},
+        },
         "requirement_count": len(docs),
         "created_at": now,
         "updated_at": now,
@@ -384,6 +409,14 @@ def update_requirement(
             recorded[field] = {"from": requirement.get(field), "to": value}
     if not recorded:
         return _out(requirement)
+    actor = Actor.of(user)
+    side_effects = _regroup(store, project_id, requirement, recorded, actor)
+    became_unanswered = "item_kind" in recorded and not is_answered({"item_kind": recorded["item_kind"]["to"]})
+    if recorded.get("status", {}).get("to") == "approved" and (became_unanswered or not is_answered(requirement)):
+        raise HTTPException(status_code=409, detail="This item is not answered in the response, so there is nothing to approve")
+    if became_unanswered and requirement.get("status") != "extracted" and "status" not in recorded:
+        # No longer an answer to approve: the status goes back to what an item with no answer has (its versions stay)
+        recorded["status"] = {"from": requirement.get("status"), "to": "extracted"}
     if recorded.get("status", {}).get("to") == "approved":
         if not requirement.get("answer_version"):
             raise HTTPException(status_code=409, detail="There is no answer to approve yet")
@@ -404,20 +437,127 @@ def update_requirement(
 
     for field, change in recorded.items():
         requirement[field] = change["to"]
-    actor = Actor.of(user)
     requirement.update(rev=requirement["rev"] + 1, updated_at=_now(), updated_by=actor.oid)
     try:
         store.apply(
             project_id,
             [
                 ledger_store.replace(requirement),
+                *side_effects,
                 ledger_store.create(new_event(project_id, actor, "requirement.updated", rid, changes=recorded)),
             ],
         )
     except Conflict:
         raise _conflict() from None
+    if recorded.get("duplicate_of", {}).get("to"):  # grouped under an item that is already answered: it has that answer now
+        try:
+            fill_repeats(store, settings, project_id, actor)
+        except Exception:
+            logger.exception("Could not copy the answer to %s; the next draft will", rid)
     return _out(_load_requirement(store, project_id, rid))
 
+
+def is_answered(requirement: Doc) -> bool:
+    """Whether an item is answered in the response (a project made before items were typed has only answered ones)."""
+    kind = requirement.get("item_kind")
+    return not kind or kind in states_kinds.ANSWERED_KINDS
+
+
+def is_repeat(requirement: Doc) -> bool:
+    return bool(requirement.get("duplicate_of"))
+
+
+def confirm_extraction(store: LedgerStore, settings: Settings, user: UserClaims, project_id: str) -> Doc:
+    """Record that a person has reviewed the extracted requirements. Needed before a model-read project is drafted."""
+    project = load_project(store, project_id, user, settings)
+    extraction = dict(project.get("extraction") or {})
+    if extraction.get("confirmed", True):
+        return _summary(project, user, settings)  # nothing to confirm (or already done)
+    actor = Actor.of(user)
+    project["extraction"] = {**extraction, "confirmed": True, "confirmed_by": actor.oid, "confirmed_name": actor.name,
+                             "confirmed_at": _now()}
+    try:
+        store.apply(project_id, [ledger_store.replace(project),
+                                 ledger_store.create(new_event(project_id, actor, "extraction.confirmed"))])
+    except Conflict:
+        raise _conflict() from None
+    return _summary(load_project(store, project_id, user, settings), user, settings)
+
+
+def _regroup(store: LedgerStore, project_id: str, requirement: Doc, recorded: dict[str, Any], actor: Actor) -> list[Any]:
+    """Keep repeats consistent when a person changes what an item is. Returns the writes for the items affected.
+
+    A repeat points at the first item only, and only an answered item can be repeated or repeated *of*. Moving an item
+    under another takes its own repeats with it; an item that stops being answered releases them. Changing only an item's
+    kind (still answered) leaves its repeats alone. Each item moved is recorded in the audit trail.
+    Called before the change is applied, so *recorded* holds the new values and *requirement* still the old ones.
+    """
+    if "item_kind" not in recorded and "duplicate_of" not in recorded:
+        return []
+    rid = requirement["rid"]
+    kind = recorded.get("item_kind", {}).get("to", requirement.get("item_kind"))
+    answered = not kind or kind in states_kinds.ANSWERED_KINDS
+    if not answered:
+        if recorded.get("duplicate_of", {}).get("to"):
+            raise HTTPException(status_code=422, detail="Only an item that is answered (a question or requirement) can be a repeat")
+        # An item that stops being answered stops being a repeat
+        if requirement.get("duplicate_of"):
+            recorded["duplicate_of"] = {"from": requirement["duplicate_of"], "to": ""}
+        target = ""
+    else:
+        target = recorded["duplicate_of"]["to"] if "duplicate_of" in recorded else requirement.get("duplicate_of", "")
+    if target:
+        first = store.get(project_id, req_doc_id(target))
+        if first is None or target == rid:
+            raise HTTPException(status_code=422, detail="That requirement does not exist, or is this one")
+        if not is_answered(first):
+            raise HTTPException(status_code=422, detail="Only an item that is answered (a question or requirement) can be a repeat")
+        if first.get("duplicate_of"):
+            raise HTTPException(status_code=422, detail=f"{target} is itself a repeat of {first['duplicate_of']}: group with that one")
+    if answered and "duplicate_of" not in recorded:
+        return []  # only the kind changed, and it is still answered: the repeats stay where they are
+    writes: list[Any] = []
+    for member in store.query(project_id, "requirement"):
+        if member.get("duplicate_of") == rid:  # this item's own repeats follow it to its new first item, or are released
+            changes = {"duplicate_of": {"from": rid, "to": target}}
+            member.update(duplicate_of=target, rev=member["rev"] + 1, updated_at=_now(), updated_by=actor.oid)
+            writes.append(ledger_store.replace(member))
+            writes.append(ledger_store.create(new_event(
+                project_id, actor, "requirement.updated", member["rid"], changes=changes, because=rid)))
+    return writes
+
+
+def copy_answer(
+    store: LedgerStore, settings: Settings, project_id: str, first: Doc, repeat: Doc, actor: Actor, job_id: str = ""
+) -> bool:
+    """Give a repeat the current answer of its first item (a new version, marked ``reused_from``). ``False`` if it can't.
+
+    A repeat that already has an answer keeps it: a person's answer, an approved one, or an earlier copy.
+    """
+    answer = first.get("answer")
+    if not answer or repeat.get("answer_version"):
+        return False
+    content = {k: v for k, v in answer.items() if k in (
+        "answer_markdown", "meets", "evidence", "assumptions", "risks", "followups", "kb_evidence_found", "state", "missing",
+        "claims", "verification", "confidence")}
+    source = answer.get("source", "user")
+    try:
+        add_answer(store, settings, project_id, repeat["rid"], {**content, "reused_from": first["rid"]},
+                   actor=AGENT if source == "model" else actor, source=source, job_id=job_id, expected_rev=repeat["rev"])
+    except HTTPException:
+        return False  # changed meanwhile: the next draft tries again
+    return True
+
+
+def fill_repeats(store: LedgerStore, settings: Settings, project_id: str, actor: Actor, job_id: str = "") -> int:
+    """Give every repeat that has no answer the answer of its first item, where the first has one. Returns how many."""
+    docs = {d["rid"]: d for d in store.query(project_id, "requirement")}
+    return sum(
+        1
+        for repeat in docs.values()
+        if repeat.get("duplicate_of") and not repeat.get("answer_version") and repeat["duplicate_of"] in docs
+        and copy_answer(store, settings, project_id, docs[repeat["duplicate_of"]], repeat, actor, job_id)
+    )
 
 # ── Answers ──────────────────────────────────────────────
 
@@ -559,6 +699,7 @@ def add_answer(
         "assumptions": answer["assumptions"],
         "risks": answer["risks"],
         "followups": answer["followups"],
+        **({"reused_from": str(content["reused_from"])[:64]} if content.get("reused_from") else {}),
         "kb_evidence_found": bool(content.get("kb_evidence_found", False)),
         "state": state,
         "missing": str(content.get("missing") or "")[:300] if state != states.FULLY else "",
