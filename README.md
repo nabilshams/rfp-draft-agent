@@ -42,7 +42,7 @@ Azure AI Foundry code-first agent that ingests RFP documents, extracts requireme
 
 | Feature | Details |
 |---|---|
-| **RFP Ingestion** | PDF (PyPDF2), DOCX (python-docx, including tables) and spreadsheet parsing; extracts sections, shall/must requirements, questions (drafted like requirements), evaluation criteria, with a source anchor and stable ID for each item |
+| **RFP Ingestion** | PDF (PyPDF2), DOCX (python-docx, including tables) and spreadsheet parsing; extracts sections, shall/must requirements, questions (drafted like requirements), evaluation criteria, instructions, dates and submission rules, each typed (kind, response type, evidence required) with a source anchor and stable ID; repeated questions are grouped; an optional model-based reader covers the whole document |
 | **Knowledge Base** | Blob → chunk → embed → Azure AI Search index with segmentation + DLAC fields |
 | **Grounded Drafting** | Azure AI Foundry Agent with AzureAISearchTool; hybrid (vector+semantic) retrieval; citations required |
 | **Compliance Matrix** | XLSX with data validation (Yes/Partial/No); evidence + source URLs |
@@ -118,6 +118,7 @@ cp .env.example .env
 | `CONFIDENCE_FRESH_DAYS` / `CONFIDENCE_STALE_DAYS` | Age of the sources a claim rests on: newer than the first is fresh (default `730`), older than it caps the band at Medium, older than the second (default `1825`) at Low |
 | `CONFIDENCE_HIGH_SUPPORT` / `CONFIDENCE_LOW_SUPPORT` | Share of an answer's claims the verifier found supported: High needs at least the first (default `0.9`); below the second (default `0.6`) is Low |
 | `CONFIDENCE_TOP_RANK` / `CONFIDENCE_MIN_RELATIVE_SCORE` | A cited source should rank within the top N matches (default `3`) and score at least this share of the best match (default `0.5`), or the band stops at Medium |
+| `EXTRACTION_CHUNK_CHARS` / `EXTRACTION_OVERLAP_CHARS` / `EXTRACTION_MAX_CHUNKS` | How the model-based extractor reads an RFP: part size (default `6000`), how much each part repeats of the one before (`400`), and the most parts it will read (`40`; a longer document is refused, not cut) |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything, so a requirement is only treated as having no evidence when the search returns nothing; the model and the citation check catch the rest) |
 | `ROUTE_COMMERCIAL_TERMS` / `ROUTE_LEGAL_TERMS` | Requirements about pricing or contract terms are never drafted: they become a placeholder for the commercial or legal team (see [Answer states](#answer-states-and-never-invent)). Terms are separated by `;`; `price*` matches any word starting with `price`, other terms match whole words and phrases, and a requirement's category and section are read too. Defaults cover price, cost, fees, discounts, payment, quotes and budgets, and liability, indemnity, warranty, governing law, IP, insurance and termination. An empty list turns routing off |
@@ -216,10 +217,24 @@ curl -X POST http://localhost:8000/rfp/extract \
   ],
   "questions": ["How do you handle data residency?"],
   "evaluation_criteria": [...],
-  "response_instructions": {}
+  "response_instructions": {},
+  "deadlines": [{ "text": "Responses must be submitted by 30 November 2026.", "date": "2026-11-30", "anchor": "¶14" }],
+  "submission_rules": ["One electronic copy in PDF format shall be uploaded to the portal."],
+  "method": "local"
 }
 ```
 
+- **Typed items.** Every item has `kind` (`question`, `mandatory`, `optional`, `instruction`, `evaluation_criterion`,
+  `deadline` or `submission_rule`), `response_type` (`narrative`, `yes_no`, `table` or `attachment`),
+  `evidence_required` (the RFP asks for a certificate, report, references...), `implicit` (inferred, not stated; only
+  the model sets it) and `duplicate_of`. Only `question`, `mandatory` and `optional` are *answered*; an instruction
+  ("each answer shall be no longer than 200 words"), a date or a submission rule is typed apart, and the last two are
+  collected into `deadlines` and `submission_rules` for the project record. The kind comes from the item's wording
+  (and a sheet's priority column: `S` is optional, `M` is mandatory; an item with no stated obligation is
+  `mandatory`, and its `priority` stays `standard`).
+- **Repeats.** An item whose content words are (nearly) the same as an earlier item's, with the same response type,
+  has `duplicate_of` set to the first one's id, so it is answered once.
+- A requirement is a whole sentence with its subject, not cut at a version number ("TLS 1.2").
 - Questions are requirements of `type: "question"`: they are drafted like any other requirement. `questions` repeats
   their text for older clients.
 - `anchor` says where an item is in the RFP: `p. 3` (PDF page), `¶12` (Word paragraph), `Table 2, row 5` (a Word
@@ -230,6 +245,28 @@ curl -X POST http://localhost:8000/rfp/extract \
 - A draft also reads the RFP's evaluation criteria and response instructions (length, format) from the file and
   gives them to the model as guidance on the *content* of each answer. A request cannot supply its own guidance.
 - Everything in the result is redacted, including keywords and categories.
+
+### `POST /rfp/extract-ai`
+Read the RFP with the model instead of the patterns: better for documents that say what they want in prose. Same
+request and response as `/rfp/extract`, with `"method": "ai"`, `coverage` (parts read, characters, items listed and
+kept) and `warnings`.
+
+- **All of the document is read.** The redacted text is cut into overlapping parts (`EXTRACTION_CHUNK_CHARS`, default
+  6000, overlapping by `EXTRACTION_OVERLAP_CHARS`) and *every* part is read. A document needing more than
+  `EXTRACTION_MAX_CHUNKS` (40) parts is refused with 413, never cut; a part the model cannot read fails the request
+  with 502 after one retry, never leaving a hole. (The old version read the first 12,000 characters.)
+- **Nothing is invented.** Each item carries a verbatim quote from the document, and an item whose quote is not found
+  in it is dropped and counted in `warnings`. A stated item's text *is* its quote; an implicit item keeps the model's
+  statement but must quote what implies it. The document's own ID for an item is kept only if the document contains it.
+- **Typed, within lists.** Values outside the lists above are replaced by what the item's wording decides. Each item's
+  `anchor` is found by locating its quote.
+- Personal details are redacted before anything is sent (per line, so anchors survive), and the document is sent
+  fenced as data, never as instructions.
+
+On the golden RFPs the model finds every requirement and nothing else (recall and precision 100%), and agrees with the
+labels on kind, response type and evidence flag for 86% of the items: it tends to call a "shall" statement `yes_no`
+(`evals/baseline.md`). The projects API still uses the pattern-based extractor; the model-based one is for you to call
+and review.
 
 ### `POST /draft`
 Generate a full RFP response draft (DOCX + XLSX) in one request. Bound to a single request, so a large RFP can hit
@@ -835,10 +872,15 @@ latency and tokens per requirement (`--input-price`/`--output-price` add a cost 
   hold (the model's invented figures are removed, and answers that cite nothing become placeholders).
 - Answer states (#33) took the false-answer rate on the unsupported requirements from 60% to 0%: each now ends as
   a placeholder for a person (`state_correctness` checks this, and the golden set includes a pricing and a legal
-  requirement that must be routed, not drafted). The baseline still shows two honest gaps: the model quotes a stale
-  figure ("99.5%") while calling it outdated (answer correctness 94%), and a known extraction false positive ("Each
-  answer shall be no longer than 200 words" is read as a requirement, tracked in #32). Whether a cited source
-  supports a claim is the verifier's job (#35).
+  requirement that must be routed, not drafted). The baseline still shows an honest gap: the model quotes a stale
+  figure ("99.5%") while calling it outdated (answer correctness 94%). Whether a cited source supports a claim is the
+  verifier's job (#35).
+- Extraction (#32) is scored per file format (recall and precision for PDF, Word and spreadsheet, held to 95% and 90%),
+  plus typed-field accuracy, repeated questions grouped correctly, and instructions, deadlines and submission rules
+  found and typed. The golden Word RFP now has a submission section and the spreadsheet a repeated question. The
+  "each answer shall be no longer than 200 words" false positive of the first baseline is gone: it is typed as an
+  instruction, not drafted. The model-based extractor is recorded once (`--mode live --extraction-only --record`, 3
+  calls) and scored on the same RFPs.
 - Add cases by adding a JSON file under `evals/golden/rfps/` (and documents to `kb.json`), then record. Keep the
   fixtures fictional: a test fails if they contain contact details, URLs or anything the redaction rules flag.
 
@@ -1005,6 +1047,8 @@ rfp-draft-agent/
 │   ├── evalkit/                   # Golden-set evaluation: fixtures, scoring, replay/live runs, reports
 │   ├── ingestion/
 │   │   ├── rfp_extract.py         # PDF/DOCX parsing + requirement extraction
+│   │   ├── classify.py            # Kind, response type, evidence flag, dates and repeated questions
+│   │   ├── ai_extract.py          # Model-based extraction: every part read, quotes verified
 │   │   ├── kb_ingest.py           # Blob → chunk (section, page) → embed → index
 │   │   ├── provenance.py          # Source types, dates, versions and the ranking weights
 │   │   ├── pipeline.py            # The one redaction path for uploads and request bodies

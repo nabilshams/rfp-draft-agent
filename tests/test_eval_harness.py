@@ -58,8 +58,8 @@ class TestRegressionGate:
         worse = [
             name
             for name in metrics.HIGHER_IS_BETTER + metrics.LOWER_IS_BETTER
-            if baseline_run.metrics[name] is not None
-            and degraded_run.metrics[name] is not None
+            if baseline_run.metrics.get(name) is not None
+            and degraded_run.metrics.get(name) is not None
             and metrics.compare({name: degraded_run.metrics[name]}, {name: baseline_run.metrics[name]}, tolerance=0.0)
         ]
         assert len(worse) >= 2, worse
@@ -112,6 +112,21 @@ class TestBaselineFindings:
         for fmt in ("pdf", "docx", "xlsx"):
             assert baseline_run.metrics[f"extraction_recall_{fmt}"] >= verification.TARGET_EXTRACTION_RECALL
             assert baseline_run.metrics[f"extraction_precision_{fmt}"] >= verification.TARGET_EXTRACTION_PRECISION
+
+    def test_the_model_based_extractor_is_measured_on_the_same_rfps(self, baseline_run):
+        m = baseline_run.metrics
+        assert m["ai_extraction_recall"] >= verification.TARGET_EXTRACTION_RECALL
+        assert m["ai_extraction_precision"] >= verification.TARGET_EXTRACTION_PRECISION
+        # An honest number: the model types some items more eagerly than the labels (yes/no for a "shall" statement)
+        assert 0.7 <= m["ai_typed_field_accuracy"] < 1.0 and m["ai_items_dropped"] == 0
+
+    def test_without_a_recording_of_the_model_reading_the_rfps_nothing_is_reported_for_it(self, tmp_path):
+        golden = tmp_path / "golden"
+        shutil.copytree(GOLDEN_DIR, golden)
+        for path in (golden / "recordings" / "baseline").glob("*.json"):
+            recorded = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if not k.startswith("#extract")}
+            path.write_text(json.dumps(recorded), encoding="utf-8")
+        assert "ai_extraction_recall" not in run_golden(mode="replay", variant="baseline", golden_dir=golden).metrics
 
     def test_typed_fields_repeats_dates_and_rules_are_read_correctly(self, baseline_run):
         m = baseline_run.metrics
@@ -282,7 +297,7 @@ class TestGoldenFixtures:
         ids = {c.id: {r["id"] for r in c.requirements} for c in load_cases()}
         for variant in ("baseline", "degraded"):
             for case_id, requirement_ids in ids.items():
-                recorded = {key.removesuffix("#verify") for key in load_recordings(GOLDEN_DIR, variant, case_id)}
+                recorded = {key.split("#")[0] for key in load_recordings(GOLDEN_DIR, variant, case_id) if not key.startswith("#")}
                 assert recorded <= requirement_ids
                 # Only requirements the model is never asked about (routed, or nothing in the knowledge base) lack one
                 unsupported = {

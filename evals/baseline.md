@@ -12,6 +12,9 @@
 | Extraction precision (Word) | 100.0% |  | precision on the Word RFPs |
 | Extraction recall (spreadsheet) | 100.0% |  | recall on the spreadsheet RFPs |
 | Extraction precision (spreadsheet) | 100.0% |  | precision on the spreadsheet RFPs |
+| Extraction recall (model) | 100.0% |  | the model-based extractor: true requirements found |
+| Extraction precision (model) | 100.0% |  | the model-based extractor: share of its items that are true requirements |
+| Typed fields (model) | 85.7% |  | the model-based extractor: kind, response type and evidence flag as labelled |
 | Typed fields | 100.0% |  | kind, response type and evidence flag as labelled |
 | Duplicates grouped | 100.0% |  | a repeated question points at the first, and nothing else is grouped |
 | Instructions, dates, rules | 100.0% |  | instructions, deadlines and submission rules found and typed (not drafted) |
