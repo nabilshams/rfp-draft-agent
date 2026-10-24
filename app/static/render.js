@@ -36,6 +36,18 @@ const STATE_STYLES = {
 };
 const PLACEHOLDER_STATES = ['no_evidence', 'needs_sme', 'needs_commercial', 'needs_legal'];
 
+// The claim verifier's overall verdict on an answer, and on each claim (see app/agents/verify.py)
+const VERIFICATION_LABELS = { verified: 'Verified', partially_verified: 'Partly verified', flagged: 'Flagged', unchecked: 'Not checked' };
+const VERIFICATION_STYLES = {
+  verified: 'background:#e8f5e9;color:var(--success)',
+  partially_verified: 'background:#fff4ce;color:#8a6d00',
+  flagged: 'background:#fde7e9;color:#a4262c',
+  unchecked: 'background:#f3f2f1;color:#605e5c',
+};
+const VERDICT_STYLES = {
+  supported: 'color:var(--success)', partial: 'color:#8a6d00', unsupported: 'color:#a4262c', contradicted: 'color:#a4262c',
+};
+
 function normReqId(id) { return String(id ?? '').trim(); }
 const respDomId = id => 'resp-' + encodeURIComponent(normReqId(id));
 const blockDomId = id => 'req-block-' + encodeURIComponent(normReqId(id));
@@ -63,7 +75,37 @@ function evidenceItemHtml(e) {
   const where = [e.effective_date, e.version && ('v' + e.version), e.section, e.page && ('p. ' + e.page)]
     .filter(Boolean).map(esc).join(' &middot; ');
   const place = where ? ' <span style="color:var(--text-muted)">(' + where + ')</span>' : '';
-  return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + link + tag + place + quote + '</li>';
+  const id = e.id ? '<strong style="color:var(--text-muted)">' + esc(e.id) + '</strong> ' : '';
+  const unverified = e.quote_verified === false
+    ? ' <span style="color:#a4262c" title="The quoted text was not found in the source it cites">&#9888; quote not found in the source</span>' : '';
+  return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + id + link + tag + place + quote + unverified + '</li>';
+}
+
+function verificationBadgeHtml(verification) {
+  if (!verification || !(verification.status in VERIFICATION_LABELS)) return '';
+  const detail = verification.status === 'flagged'
+    ? ' (' + [['unsupported', verification.unsupported], ['contradicted', verification.contradicted]]
+        .filter(p => p[1]).map(p => Number(p[1]) + ' ' + p[0]).join(', ') + ')'
+    : '';
+  const title = verification.reason ? ' title="' + esc(verification.reason) + '"' : ' title="Claims checked against the evidence they cite"';
+  return '<span class="badge" style="' + VERIFICATION_STYLES[verification.status] + '"' + title + '>' +
+    esc(VERIFICATION_LABELS[verification.status] + detail) + '</span>';
+}
+
+/** The claims an answer makes, each with its verdict, reason and the evidence it cites. Flagged ones are open. */
+function claimsHtml(resp) {
+  const claims = resp.claims || [];
+  if (!claims.length) return '';
+  const flagged = claims.filter(c => c.verdict === 'unsupported' || c.verdict === 'contradicted').length;
+  const rows = claims.map(c =>
+    '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' +
+      '<strong style="' + (VERDICT_STYLES[c.verdict] || 'color:var(--text-muted)') + '">' + esc(c.verdict || 'not checked') + '</strong> ' +
+      esc(c.text) +
+      (c.evidence_ids && c.evidence_ids.length ? ' <span style="color:var(--text-muted)">[' + c.evidence_ids.map(esc).join(', ') + ']</span>' : ' <span style="color:#a4262c">[no evidence]</span>') +
+      (c.reason ? '<div style="color:var(--text-muted)">' + esc(c.reason) + (c.checked_by === 'rule' ? ' (checked without a model)' : '') + '</div>' : '') +
+    '</li>').join('');
+  return '<details style="margin-top:6px"' + (flagged ? ' open' : '') + '><summary style="font-size:11px;cursor:pointer"><strong>Claims (' + claims.length + ')</strong></summary>' +
+    '<ul style="list-style:none;margin:4px 0 0 0;padding:0">' + rows + '</ul></details>';
 }
 
 function stateBadgeHtml(state) {
@@ -87,10 +129,11 @@ function answerBodyHtml(resp) {
     ? '<div style="margin-top:4px;font-size:11px;color:#8a6d00"><strong>Missing:</strong> ' + esc(resp.missing) + '</div>' : '';
   return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
       '<span style="font-weight:700;font-size:13px' + (meets ? '' : ';color:var(--text-muted)') + '" class="' + (MEETS_CLASSES[meets] || '') + '">' + esc(meets || 'Not assessed') + '</span>' +
-      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' + stateBadgeHtml(resp.state) + '</div>' +
+      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' + stateBadgeHtml(resp.state) + verificationBadgeHtml(resp.verification) + '</div>' +
     body + missing +
     (evidence ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evidence + '</ul></div>' : '') +
     (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
+    claimsHtml(resp) +
     listed('Assumptions', resp.assumptions) + listed('Risks', resp.risks, 'var(--error)');
 }
 
@@ -116,8 +159,9 @@ function requirementActionsHtml(req, running) {
   const button = (action, label, extra) =>
     '<button class="btn btn-secondary btn-sm" data-action="' + action + '" data-rid="' + rid + '"' + (extra || '') + '>' + label + '</button>';
   const parts = [button('edit-answer', req.answer ? 'Edit answer' : 'Write answer')];
-  // Only an answer the sources support can be approved; a placeholder or conflict needs a person to write it first
-  const approvable = !req.state || ['fully_answered', 'partially_answered'].includes(req.state);
+  // Only an answer the sources support can be approved; a placeholder, a conflict or an answer with a claim its evidence
+  // does not support needs a person to write or fix it first
+  const approvable = (!req.state || ['fully_answered', 'partially_answered'].includes(req.state)) && req.verification !== 'flagged';
   if (req.answer && req.status !== 'approved' && approvable) parts.push(button('approve', 'Approve'));
   if (req.answer) parts.push(button('versions', 'Versions (' + Number(req.answer_version) + ')'));
   parts.push(button('history', 'History'));
@@ -160,7 +204,7 @@ function countsHtml(counts, total) {
   const item = (label, n, color) => '<span style="color:' + color + '"><strong>' + Number(n) + '</strong> ' + label + '</span>';
   return '<div style="display:flex;gap:14px;font-size:12px;flex-wrap:wrap">' +
     item('no answer', counts.extracted || 0, 'var(--text-muted)') + item('drafted', counts.drafted || 0, '#0f6cbd') +
-    item('needs input', counts.needs_input || 0, '#a4262c') +
+    item('needs input', counts.needs_input || 0, '#a4262c') + item('flagged', counts.flagged || 0, '#a4262c') +
     item('edited', counts.edited || 0, '#8a6d00') + item('approved', counts.approved || 0, 'var(--success)') +
     '<span style="color:var(--text-muted)">of ' + Number(total) + '</span></div>';
 }
@@ -252,7 +296,7 @@ function projectListHtml(projects) {
 if (typeof module !== 'undefined') {
   module.exports = {
     meetsLabel, priorityClass, normReqId, respDomId, blockDomId, formatTime, evidenceItemHtml, answerBodyHtml,
-    statusBadgeHtml, stateBadgeHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
+    statusBadgeHtml, stateBadgeHtml, verificationBadgeHtml, claimsHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
     versionsHtml, describeEvent, eventsHtml, projectListHtml,
   };
 }

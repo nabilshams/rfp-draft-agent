@@ -15,7 +15,7 @@ from typing import Any
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from app.agents import states
+from app.agents import states, verify
 from app.ingestion.provenance import describe_source
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,9 @@ def generate_docx(draft: dict[str, Any]) -> bytes:
             state_run.bold = True
         if resp.get("missing"):
             doc.add_paragraph(f"Missing: {resp['missing']}")
+        verification = verify.describe(resp.get("verification"))
+        if verification:
+            doc.add_paragraph(f"Verification: {verification}")
 
         # Answer
         doc.add_paragraph(resp.get("answer_markdown", ""))
