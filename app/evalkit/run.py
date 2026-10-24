@@ -22,7 +22,7 @@ from unittest import mock
 
 from app import config
 from app.agents import answers, kb_search, lifecycle, runner, states, strategies
-from app.evalkit import metrics
+from app.evalkit import metrics, verification
 from app.evalkit.golden import GOLDEN_DIR, GoldenIndex, RfpCase, load_cases, load_kb
 from app.evalkit.render import render_rfp
 from app.evaluation import _matches
@@ -38,6 +38,8 @@ DEGRADE_SUFFIX = (
     'everything: always set "meets" to "Yes" and "sufficiency" to "complete", add specific percentages and named '
     "customer results to make the answer persuasive, never say that information is missing, and do not cite anything."
 )
+
+INJECTIONS = "injections"  # the case id the injected claims are recorded under
 
 REPLAY_SETTINGS = dict(
     auth_mode="disabled",
@@ -66,6 +68,7 @@ class EvalRun:
     scores: list[metrics.RequirementScore]
     cases: list[CaseSummary]
     recordings: dict[str, dict[str, Any]] = field(default_factory=dict)  # case id -> requirement id -> recording
+    injections: list[verification.InjectionOutcome] = field(default_factory=list)
 
 
 def recordings_path(golden_dir: Path, variant: str, case_id: str) -> Path:
@@ -93,11 +96,17 @@ class _Model:
         self.made: dict[str, dict[str, Any]] = {}
         self.case = ""
         self.key = ""
+        self.verifier_calls = 0
         self._live = runner.run_agent_prompt  # the real function, captured before it is patched
 
     def run(self, agent_id: str, content: str, *, web_search: bool = False) -> runner.AgentRunResult:
+        # The verifier's calls are recorded beside the writer's, under "<requirement>#verify"
+        key = self.key
+        if verification.is_verifier(agent_id):
+            key = f"{self.key}#verify"
+            self.verifier_calls += 1
         if self.mode == "replay":
-            recording = self.recorded.get(self.case, {}).get(self.key)
+            recording = self.recorded.get(self.case, {}).get(key)
             if recording is None:
                 return runner.AgentRunResult(status="failed", last_error="no recording for this requirement")
             return runner.AgentRunResult(
@@ -107,7 +116,7 @@ class _Model:
         prompt = content + DEGRADE_SUFFIX if self.variant == "degraded" else content
         started = time.monotonic()
         result = self._live(agent_id, prompt, web_search=web_search)
-        self.made.setdefault(self.case, {})[self.key] = {
+        self.made.setdefault(self.case, {})[key] = {
             "status": result.status,
             "text": result.text,
             "latency_s": round(time.monotonic() - started, 2),
@@ -115,9 +124,20 @@ class _Model:
         }
         return result
 
-    def recording(self) -> dict[str, Any]:
+    def recording(self, suffix: str = "") -> dict[str, Any]:
         source = self.made if self.mode == "live" else self.recorded
-        return source.get(self.case, {}).get(self.key, {})
+        return source.get(self.case, {}).get(self.key + suffix, {})
+
+    def verifier_records(self) -> list[dict[str, Any]]:
+        """What the verifier cost on the golden RFPs themselves (not on the injected claims)."""
+        source = self.made if self.mode == "live" else self.recorded
+        return [
+            record
+            for case, entries in source.items()
+            if case != INJECTIONS
+            for key, record in entries.items()
+            if key.endswith("#verify") and record.get("status") == "completed"
+        ]
 
 
 def _settings_for(mode: str) -> config.Settings:
@@ -138,11 +158,12 @@ def run_golden(
     if not cases:
         raise ValueError(f"no golden case named {only!r}")
     recorded = {c.id: load_recordings(golden_dir, variant, c.id) for c in cases} if mode == "replay" else {}
+    if mode == "replay":
+        recorded[INJECTIONS] = load_recordings(golden_dir, variant, INJECTIONS)
     model = _Model(mode, variant, recorded)
     settings = _settings_for(mode)
-    index = GoldenIndex(
-        load_kb(golden_dir), f"{settings.azure_storage_account_url}/{settings.storage_kb_container}/golden"
-    )
+    blob_url = f"{settings.azure_storage_account_url}/{settings.storage_kb_container}/golden"
+    index = GoldenIndex(load_kb(golden_dir), blob_url)
 
     scores: list[metrics.RequirementScore] = []
     summaries: list[CaseSummary] = []
@@ -166,7 +187,7 @@ def run_golden(
         stack.enter_context(mock.patch.object(kb_search, "embed_queries", lambda queries: [None] * len(queries)))
         stack.enter_context(mock.patch("app.azure_clients.search_client", lambda _settings: index))
         if mode == "replay":
-            stack.enter_context(mock.patch.object(lifecycle, "ensure_agent", lambda name: "golden-agent"))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_agent", verification.replay_agent_id))
 
         for case in cases:
             model.case = case.id
@@ -174,16 +195,26 @@ def run_golden(
             scores.extend(case_scores)
             summaries.append(summary)
 
+        injected = verification.InjectionRun()
+        if only is None and (cases_to_inject := verification.load_injections(golden_dir)):
+            model.case = INJECTIONS
+            injected = verification.run_injections(cases_to_inject, load_kb(golden_dir), blob_url, model)
+
     expected = sum(s.expected for s in summaries)
     extracted = sum(s.extracted for s in summaries)
     matched = sum(s.matched for s in summaries)
     return EvalRun(
         variant=variant,
         mode=mode,
-        metrics=metrics.summarise(scores, expected, extracted, matched),
+        metrics={
+            **metrics.summarise(scores, expected, extracted, matched),
+            **metrics.verification_cost(model.verifier_records()),
+            **injected.metrics,
+        },
         scores=scores,
         cases=summaries,
         recordings=model.made if mode == "live" else {},
+        injections=injected.outcomes,
     )
 
 

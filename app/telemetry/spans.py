@@ -37,11 +37,11 @@ ALLOWED = frozenset(
     {
         # identifiers and enumerations
         "job.id", "rfp.id", "approach", "requirement.id", "section.name_hash", "outcome", "error.type", "web_search",
-        "llm.model", "llm.status", "kb.mode", "answer.state",
+        "llm.model", "llm.status", "kb.mode", "answer.state", "verifier.model", "verification.status",
         # counts and measurements
         "requirements.total", "requirements.done", "sections", "llm.calls", "llm.input_tokens", "llm.output_tokens",
         "llm.total_tokens", "llm.cost_usd", "llm.latency_ms", "kb.results", "kb.top_k", "figures.removed",
-        "citations", "evidence", "context.docs", "prompt.chars", "answer.chars", "outputs.bytes",
+        "citations", "evidence", "claims", "claims.flagged", "claims.by_rule", "context.docs", "prompt.chars", "answer.chars", "outputs.bytes",
     }
 )
 _IDENTIFIER = re.compile(r"^[\w.:/+\- ]{0,64}$")
@@ -95,15 +95,23 @@ class Meter:
     input_tokens: int = 0
     output_tokens: int = 0
     figures_removed: int = 0
+    other_cost: float = 0.0  # calls priced unlike the default (see add_usage), and their tokens
+    other_input_tokens: int = 0
+    other_output_tokens: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def add_usage(self, input_tokens: int, output_tokens: int) -> float:
-        """Count one model call; returns its estimated cost."""
+    def add_usage(self, input_tokens: int, output_tokens: int, prices: tuple[float, float] | None = None) -> float:
+        """Count one model call; returns its estimated cost. *prices* are for a model priced unlike the default."""
+        cost = cost_usd(input_tokens, output_tokens, *(prices or (self.input_price, self.output_price)))
         with self._lock:
             self.calls += 1
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
-        return cost_usd(input_tokens, output_tokens, self.input_price, self.output_price)
+            if prices:
+                self.other_cost += cost
+                self.other_input_tokens += input_tokens
+                self.other_output_tokens += output_tokens
+        return cost
 
     def add_figures_removed(self, count: int) -> None:
         with self._lock:
@@ -111,7 +119,13 @@ class Meter:
 
     @property
     def cost(self) -> float:
-        return cost_usd(self.input_tokens, self.output_tokens, self.input_price, self.output_price)
+        default = cost_usd(
+            self.input_tokens - self.other_input_tokens,
+            self.output_tokens - self.other_output_tokens,
+            self.input_price,
+            self.output_price,
+        )
+        return round(default + self.other_cost, 6)
 
     def totals(self) -> dict[str, Any]:
         return {

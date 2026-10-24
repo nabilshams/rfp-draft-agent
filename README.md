@@ -112,6 +112,9 @@ cp .env.example .env
 | `JOB_WORKERS` | Background drafts run at once in this process (default: `2`) |
 | `JOB_MAX_ACTIVE_PER_USER` | Unfinished background drafts one user may have (default: `3`) |
 | `JOB_HEARTBEAT_SECONDS` / `JOB_STALE_SECONDS` | How often a running job records that it is alive (default `15`), and how long without that before it is reported as interrupted (default `120`) |
+| `VERIFY_ANSWERS` | Check every drafted answer's claims against the evidence it cites (see [Claim verification](#claim-verification)); roughly one extra model call per requirement. `true` by default |
+| `VERIFIER_MODEL_DEPLOYMENT_NAME` | The model deployment the verifier runs on. Empty = the same as the writer (`FOUNDRY_MODEL_DEPLOYMENT_NAME`). A different deployment reduces errors the two would share; it must already exist in the Foundry account |
+| `VERIFIER_INPUT_PRICE_PER_MILLION` / `VERIFIER_OUTPUT_PRICE_PER_MILLION` | USD per million tokens, only when the verifier's deployment is priced differently from the writer's (`MODEL_*_PRICE_PER_MILLION`). Used for the cost estimate in telemetry; empty = the writer's prices |
 | `SEARCH_TOP_K` | Knowledge-base documents retrieved per requirement or question (default: `5`) |
 | `SEARCH_MIN_SCORE` | Drop weaker matches: the semantic reranker score (0-4) when `SEARCH_SEMANTIC_RANKER` is on, otherwise the search score (default: `0`, keep everything, so a requirement is only treated as having no evidence when the search returns nothing; the model and the citation check catch the rest) |
 | `ROUTE_COMMERCIAL_TERMS` / `ROUTE_LEGAL_TERMS` | Requirements about pricing or contract terms are never drafted: they become a placeholder for the commercial or legal team (see [Answer states](#answer-states-and-never-invent)). Terms are separated by `;`; `price*` matches any word starting with `price`, other terms match whole words and phrases, and a requirement's category and section are read too. Defaults cover price, cost, fees, discounts, payment, quotes and budgets, and liability, indemnity, warranty, governing law, IP, insurance and termination. An empty list turns routing off |
@@ -722,6 +725,37 @@ requirement's status and what is missing, and the compliance matrix has an "Answ
 columns keep their positions). Whether a *cited* source really supports each claim is judged claim by claim by the
 verifier planned in #35; these states are the floor underneath it.
 
+<a id="claim-verification"></a>
+**Claim verification: a second, independent check.** The writer does not just report its own confidence. Beside the
+answer it lists the **claims** the answer makes (each a short factual statement) and the **evidence ids** that support
+each one. Then, independently of the writer:
+
+1. *Deterministic checks first, with no model.* A claim that cites nothing, whose cited quote is not really in the
+   retrieved source (a fabricated or paraphrased quote), or that states a percentage, amount or count that the cited
+   text does not contain, is `unsupported` immediately.
+2. *A separate verifier* (its own agent and prompt, `rfp-verifier-agent`, optionally on its own model deployment:
+   `VERIFIER_MODEL_DEPLOYMENT_NAME`) judges the rest against the passages they cite, and only those: `supported`,
+   `partial`, `unsupported` or `contradicted`. Names the claim uses that its evidence never mentions are pointed out to it.
+
+Each answer carries `claims` (text, evidence ids, verdict, reason, whether a rule or the verifier decided) and a
+`verification` summary: `verified` (all claims supported), `partially_verified`, `flagged` (an unsupported or
+contradicted claim) or `unchecked` (no claims listed, verification off, or the verifier could not be reached: a verifier
+outage never fails a draft). Evidence entries get ids and a `quote_verified` flag. Nothing is rewritten or removed: a
+contradicted claim makes the answer `conflicting_evidence`, an unsupported one downgrades `fully_answered` to
+`partially_answered`, and every flagged claim is listed under the answer's risks, so the Word document, the matrix and
+the UI show it. Placeholders and failures have nothing to verify. A claim that rests only on a web source can't be
+checked (its page isn't visible here) and is left `unchecked`.
+
+On the golden set, 32 claims written against the knowledge base (16 deliberately wrong: fabricated quotes, an invented
+capability, a changed number, an overstated scope; 16 correct, including paraphrases) are checked by the real code.
+The baseline catches all 16 wrong ones, rejects none of the correct ones, and catches 6 by rules alone, with no
+model call (four are built to be rule cases; two changed numbers happen to be too). Targets: at least 80% caught, at most 10% of correct claims rejected. The writer's own claims on the golden RFPs
+come out 88% supported: the verifier flags real overreach (for example "sessions are conducted live" where the source
+says only "online"). Verification adds about 0.6k input and 0.1k output tokens and a few seconds per requirement
+(`evals/baseline.md`). Whether the verifier agrees with a person is not measured here: it judges only the passage a claim
+cites, so a claim that is true but cited to the wrong passage is flagged, and a superseded source that the answer cites
+correctly is not (finding conflicts between sources is a separate piece of work, #41).
+
 **Invented figures are removed.** The prompts forbid made-up statistics, customer results and experience claims, and
 a check enforces it: every percentage, amount, multiplier and count of customers, projects or years in a generated
 answer or section narrative must also appear in what the model was given (the retrieved sources, the requirement,
@@ -746,7 +780,7 @@ latency and tokens per requirement (`--input-price`/`--output-price` add a cost 
 - `python scripts/eval_pipeline.py --check` exits 1 if any metric is worse than `evals/baseline.json` by more than
   its tolerance (2 points). The test suite runs the same check (`tests/test_eval_harness.py`), so CI fails on a
   regression in extraction, retrieval, prompts' post-processing or scoring.
-- `--mode live --record` calls the real model (billable; about 22 calls) and saves its answers under
+- `--mode live --record` calls the real model (billable; about 65 calls: the writer, the verifier on its answers, and the verifier on the injected claims) and saves its answers under
   `evals/golden/recordings/<variant>/`. Do this when the prompts or the model change on purpose, then
   `--write-baseline` to accept the new numbers. `--mode live --degrade --record` adds a deliberately bad
   instruction; the recorded `degraded` variant is kept to show that the metrics notice and that the guardrails
@@ -913,6 +947,7 @@ rfp-draft-agent/
 │   │   ├── grounding.py           # Removes figures that are not in the sources
 │   │   ├── normalize.py           # Shape checks on model output
 │   │   ├── states.py              # Answer states, routing to people, and the "never invent" rule
+│   │   ├── verify.py              # Claim verification: rules first, then an independent verifier
 │   │   ├── prompts.py             # System instructions + JSON schemas
 │   │   ├── retrieval.py           # DLAC + segmentation query builder
 │   │   └── untrusted.py           # Fences that mark third-party text in prompts

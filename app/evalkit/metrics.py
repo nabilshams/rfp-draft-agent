@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
-from app.agents import states
+from app.agents import states, verify
 from app.agents.grounding import figures_in
 
 # Metrics where a bigger number is better, and where a smaller one is. Used for regression checks.
@@ -22,8 +22,13 @@ HIGHER_IS_BETTER = (
     "compliance_correctness",
     "answer_rate",
     "state_correctness",
+    "claim_support_rate",
+    "injection_recall",
+    "deterministic_catch_rate",
 )
-LOWER_IS_BETTER = ("unsupported_claim_rate_raw", "unsupported_claim_rate_final", "false_answer_rate")
+LOWER_IS_BETTER = (
+    "unsupported_claim_rate_raw", "unsupported_claim_rate_final", "false_answer_rate", "injection_false_positive_rate"
+)
 
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = frozenset(
@@ -94,6 +99,8 @@ class RequirementScore:
     meets: str = ""
     abstention_ok: bool | None = None
     state: str = ""
+    verification: str = ""  # the claim verifier's overall status for the answer
+    claims: dict[str, int] = field(default_factory=dict)  # verdict -> number of claims
     state_ok: bool | None = None  # the answer state is one the requirement should end in
     answer_ok: bool | None = None  # contains_any / forbid satisfied (None when the case sets none)
     compliance_ok: bool | None = None  # meets_in satisfied (None when the case sets none)
@@ -178,6 +185,14 @@ def score_requirement(
     score.answered = True
     score.meets = str(answer.get("meets", ""))
     score.state = str(answer.get("state", ""))
+    summary = answer.get("verification") or {}
+    score.verification = str(summary.get("status", ""))
+    score.claims = {v: int(summary.get(v, 0)) for v in verify.VERDICTS}
+    if score.claims[verify.UNSUPPORTED] + score.claims[verify.CONTRADICTED]:
+        flagged = [c for c in answer.get("claims", []) if c.get("verdict") in verify.FLAGGED_VERDICTS]
+        score.problems.append(
+            f"{len(flagged)} claim(s) the evidence does not support: " + "; ".join(c["text"][:70] for c in flagged[:2])
+        )
     wanted = expected.get("state_in") or (states.ANSWERED if score.supported else states.PLACEHOLDER_STATES)
     score.state_ok = score.state in wanted
     if not score.state_ok:
@@ -237,6 +252,11 @@ def summarise(scores: list[RequirementScore], expected_total: int, extracted_tot
         if retrieval
         else None,
         "answer_rate": _rate(len(answered), len(scores)),
+        "claim_support_rate": _rate(
+            sum(s.claims.get(verify.SUPPORTED, 0) for s in answered),
+            sum(sum(s.claims.values()) for s in answered),
+        ),
+        "claims_per_answer": round(mean(sum(s.claims.values()) for s in answered), 2) if answered else None,
         "citation_support_rate": _rate(sum(s.citations_supported for s in scores), cited),
         "unsupported_claim_rate_raw": _rate(sum(1 for s in answered if s.unsupported_raw), len(answered)),
         "unsupported_claim_rate_final": _rate(sum(1 for s in answered if s.unsupported_final), len(answered)),
@@ -258,6 +278,19 @@ def estimate_cost(metrics: dict[str, Any], input_price: float | None, output_pri
     if input_price is None or output_price is None or tokens_in is None or tokens_out is None:
         return None
     return round((tokens_in * input_price + tokens_out * output_price) / 1_000_000, 5)
+
+
+def verification_cost(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """What one verifier call costs on the golden answers: latency and tokens (from the live recording)."""
+    latencies = [r["latency_s"] for r in records if r.get("latency_s") is not None]
+    in_tokens = [r["usage"]["input_tokens"] for r in records if r.get("usage", {}).get("input_tokens")]
+    out_tokens = [r["usage"]["output_tokens"] for r in records if r.get("usage", {}).get("output_tokens")]
+    return {
+        "verifier_calls": len(records),
+        "verification_latency_mean_s": round(mean(latencies), 2) if latencies else None,
+        "verification_input_tokens_per_call": round(mean(in_tokens)) if in_tokens else None,
+        "verification_output_tokens_per_call": round(mean(out_tokens)) if out_tokens else None,
+    }
 
 
 # ── Regression check ─────────────────────────────────────

@@ -1,47 +1,92 @@
 {
   "C1": {
     "status": "completed",
-    "text": "```json\n{\n  \"requirement_id\": \"R1\",\n  \"requirement_text\": \"The vendor shall support single sign-on using SAML 2\",\n  \"answer_markdown\": \"Our platform supports single sign-on (SSO) functionality through Microsoft Entra ID, leveraging both SAML 2.0 and OpenID Connect protocols. This ensures seamless and secure access for users, providing a robust authentication method that simplifies user access while maintaining high security standards. Additionally, the platform mandates multi-factor authentication (MFA) for all administrator accounts, further fortifying the security posture of our SSO implementation.\\n\\nThe integration of SAML 2.0 ensures compatibility with a wide range of identity providers and applications, facilitating flexibility and ease of implementation across diverse environments. Our platform’s security measures align with industry-leading best practices, ensuring both compliance and operational efficiency for organizations.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"title\": \"identity-and-access.docx\",\n      \"source_url\": \"/kb/doc/efd512fa85ad032b1267d804\",\n      \"quote\": \"The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect. Multi-factor authentication is enforced for all administrator accounts.\"\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
-    "latency_s": 5.69,
+    "text": "```json\n{\n  \"requirement_id\": \"R1\",\n  \"requirement_text\": \"The vendor shall support single sign-on using SAML 2\",\n  \"answer_markdown\": \"Alder & Finch Cloud Services supports single sign-on functionality through Microsoft Entra ID. This implementation adheres to SAML 2.0 standards, ensuring seamless integration with identity providers that support this protocol. Additionally, multi-factor authentication is enforced for all administrator accounts to enhance security.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"id\": \"E1\",\n      \"title\": \"identity-and-access.docx\",\n      \"source_url\": \"/kb/doc/efd512fa85ad032b1267d804\",\n      \"quote\": \"The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect. Multi-factor authentication is enforced for all administrator accounts.\"\n    }\n  ],\n  \"claims\": [\n    {\n      \"text\": \"Single sign-on is supported through Microsoft Entra ID using SAML 2.0.\",\n      \"evidence_ids\": [\"E1\"]\n    },\n    {\n      \"text\": \"Multi-factor authentication is enforced for all administrator accounts.\",\n      \"evidence_ids\": [\"E1\"]\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
+    "latency_s": 18.11,
     "usage": {
-      "input_tokens": 2261,
-      "output_tokens": 306
+      "input_tokens": 2506,
+      "output_tokens": 305
+    }
+  },
+  "C1#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states 'The platform supports single sign-on through Microsoft Entra ID using SAML 2.0'.\"}, {\"id\": \"C2\", \"verdict\": \"supported\", \"reason\": \"The passage states 'Multi-factor authentication is enforced for all administrator accounts'.\"}]}",
+    "latency_s": 16.77,
+    "usage": {
+      "input_tokens": 603,
+      "output_tokens": 85
     }
   },
   "C2": {
     "status": "completed",
-    "text": "```json\n{\n  \"requirement_id\": \"R2\",\n  \"requirement_text\": \"The provider must enforce multi-factor authentication for administrators\",\n  \"answer_markdown\": \"The platform enforces multi-factor authentication (MFA) for all administrator accounts as part of its identity and access management framework. This feature is implemented using Microsoft Entra ID, and supports authentication protocols such as SAML 2.0 and OpenID Connect. By enforcing MFA, the platform ensures an added layer of security, mitigating unauthorized access risks to administrative functionalities and sensitive data.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"title\": \"identity-and-access.docx\",\n      \"source_url\": \"/kb/doc/efd512fa85ad032b1267d804\",\n      \"quote\": \"The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect. Multi-factor authentication is enforced for all administrator accounts.\"\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
-    "latency_s": 5.42,
+    "text": "```json\n{\n  \"requirement_id\": \"R2\",\n  \"requirement_text\": \"The provider must enforce multi-factor authentication for administrators\",\n  \"answer_markdown\": \"The platform enforces multi-factor authentication (MFA) for all administrator accounts by default. This ensures a higher level of security for sensitive administrator actions and accounts, safeguarding against unauthorized access and credential compromises. The MFA implementation uses Microsoft Entra ID, which supports industry-standard protocols such as SAML 2.0 and OpenID Connect to securely authenticate administrators. \\n\\nThe usage of well-established authentication protocols ensures that MFA is seamlessly integrated into the identity and access management framework of the platform, reducing risks associated with single-factor authentication mechanisms. Organizations can confidently rely on this compliance safeguard to mitigate vulnerabilities in administrative access and ensure robust security measures are consistently maintained.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"id\": \"E1\",\n      \"title\": \"identity-and-access.docx\",\n      \"source_url\": \"/kb/doc/efd512fa85ad032b1267d804\",\n      \"quote\": \"The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect. Multi-factor authentication is enforced for all administrator accounts.\"\n    }\n  ],\n  \"claims\": [\n    {\n      \"text\": \"The platform enforces multi-factor authentication for all administrator accounts by default.\",\n      \"evidence_ids\": [\"E1\"]\n    },\n    {\n      \"text\": \"Multi-factor authentication uses Microsoft Entra ID and supports protocols such as SAML 2.0 and OpenID Connect.\",\n      \"evidence_ids\": [\"E1\"]\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
+    "latency_s": 17.21,
     "usage": {
-      "input_tokens": 1991,
-      "output_tokens": 241
+      "input_tokens": 2236,
+      "output_tokens": 386
+    }
+  },
+  "C2#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states 'Multi-factor authentication is enforced for all administrator accounts.'\"}, {\"id\": \"C2\", \"verdict\": \"unsupported\", \"reason\": \"The passage does not link multi-factor authentication to Microsoft Entra ID or any specific protocols like SAML 2.0 or OpenID Connect.\"}]}",
+    "latency_s": 15.71,
+    "usage": {
+      "input_tokens": 619,
+      "output_tokens": 89
     }
   },
   "C3": {
     "status": "completed",
-    "text": "```json\n{\n  \"requirement_id\": \"R3\",\n  \"requirement_text\": \"The vendor shall retain backups for at least 35 days\",\n  \"answer_markdown\": \"Our organization ensures that customer data backups are retained for a minimum of 35 days, fully aligning with this requirement. Backups are exclusively stored within Australian data centers located in the Sydney and Melbourne regions, ensuring compliance with local data residency requirements. This policy is designed to provide secure and reliable data retention for our clients, while maintaining data sovereignty in Australia.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Backups stay in Australia and are retained for 35 days.\"\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
-    "latency_s": 5.61,
+    "text": "```json\n{\n  \"requirement_id\": \"R3\",\n  \"requirement_text\": \"The vendor shall retain backups for at least 35 days\",\n  \"answer_markdown\": \"Our organization complies with the requirement to retain backups for at least 35 days. All customer data backups are retained securely in Australian data centres located in the Sydney and Melbourne regions for a duration of 35 days. These measures are in alignment with our security policy to ensure data integrity and compliance with relevant regulations, providing reliable and secure data protection for our clients. \\n\\nThe retention practices are verified through our security policy and operational guidelines and support our commitment to high standards for data protection and residency policies.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"id\": \"E1\",\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Customer data is stored in Australian data centres in the Sydney and Melbourne regions. Backups stay in Australia and are retained for 35 days.\"\n    }\n  ],\n  \"claims\": [\n    {\n      \"text\": \"Customer data backups are retained securely in Australian data centres for a duration of 35 days.\",\n      \"evidence_ids\": [\"E1\"]\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
+    "latency_s": 14.45,
     "usage": {
-      "input_tokens": 2240,
-      "output_tokens": 223
+      "input_tokens": 2503,
+      "output_tokens": 320
+    }
+  },
+  "C3#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"partial\", \"reason\": \"Passage confirms 35-day retention and Australian storage but does not explicitly state 'securely' for the backups.\"}]}",
+    "latency_s": 13.73,
+    "usage": {
+      "input_tokens": 586,
+      "output_tokens": 50
     }
   },
   "C4": {
     "status": "completed",
-    "text": "```json\n{\n  \"requirement_id\": \"R4\",\n  \"requirement_text\": \"The vendor must keep all patient data in Australia\",\n  \"answer_markdown\": \"Our organization adheres to strict data residency requirements by ensuring that all customer data, including patient data, is stored in Australian data centres located in the Sydney and Melbourne regions. Backups are retained exclusively within Australia for a period of 35 days. \\n\\nThese protocols align with domestic compliance regulations and underline our commitment to safeguarding sensitive patient data within national boundaries, as specified in our approved security policies.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Customer data is stored in Australian data centres in the Sydney and Melbourne regions. Backups stay in Australia and are retained for 35 days.\"\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
-    "latency_s": 5.39,
+    "text": "```json\n{\n  \"requirement_id\": \"R4\",\n  \"requirement_text\": \"The vendor must keep all patient data in Australia\",\n  \"answer_markdown\": \"Our organization ensures compliance with data residency requirements by storing all customer data, including patient data, exclusively in Australian data centres, specifically in the Sydney and Melbourne regions. This includes all backups of such data, which are retained within Australia for a duration of 35 days. This policy aligns with local regulatory requirements on data sovereignty for patient information and other critical data, providing secure and compliant data storage systems.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"id\": \"E1\",\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Customer data is stored in Australian data centres in the Sydney and Melbourne regions. Backups stay in Australia and are retained for 35 days.\"\n    }\n  ],\n  \"claims\": [\n    {\n      \"text\": \"Customer data, including patient data, is stored exclusively in Australian data centres located in the Sydney and Melbourne regions.\",\n      \"evidence_ids\": [\"E1\"]\n    },\n    {\n      \"text\": \"Backups of all customer data are retained within Australia for a duration of 35 days.\",\n      \"evidence_ids\": [\"E1\"]\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": []\n}\n```",
+    "latency_s": 11.38,
     "usage": {
-      "input_tokens": 2146,
-      "output_tokens": 246
+      "input_tokens": 2391,
+      "output_tokens": 338
+    }
+  },
+  "C4#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"partial\", \"reason\": \"Passage states customer data is stored in Australian data centres but does not explicitly mention patient data or exclusivity.\"}, {\"id\": \"C2\", \"verdict\": \"supported\", \"reason\": \"Passage explicitly states backups are retained in Australia for 35 days.\"}]}",
+    "latency_s": 7.13,
+    "usage": {
+      "input_tokens": 612,
+      "output_tokens": 82
     }
   },
   "C5": {
     "status": "completed",
-    "text": "```json\n{\n  \"requirement_id\": \"R5\",\n  \"requirement_text\": \"The vendor shall provide a SOC 2 Type II report\",\n  \"answer_markdown\": \"Alder & Finch Cloud Services holds a current SOC 2 Type II report, which is audited every year by an independent assessor. The SOC 2 Type II report is available upon request. This certification demonstrates our robust controls and commitment to ensuring the security, availability, and confidentiality of our services, in compliance with industry standards and regulations. \\n\\nPlease let us know if you would like us to provide a copy of the latest SOC 2 Type II report.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Alder & Finch Cloud Services holds a current SOC 2 Type II report and an ISO 27001 certification. Both are audited every year by an independent assessor and the reports are available on request.\"\n    }\n  ],\n  \"assumptions\": [\n    \"The SOC 2 Type II report remains current and up to date.\"\n  ],\n  \"risks\": [],\n  \"followups\": [\n    \"Confirm if the RFP review team requires the SOC 2 Type II report to be provided during the proposal submission or if it can be shared upon request.\"\n  ]\n}\n```",
-    "latency_s": 5.39,
+    "text": "```json\n{\n  \"requirement_id\": \"R5\",\n  \"requirement_text\": \"The vendor shall provide a SOC 2 Type II report\",\n  \"answer_markdown\": \"Alder & Finch Cloud Services holds a current SOC 2 Type II report. This certification is audited yearly by an independent assessor to ensure continuous compliance and reliability. The SOC 2 Type II report demonstrates the organization’s commitment to stringent security practices, including data protection, system security, and privacy controls. Additionally, the report is available upon request to provide transparency and assurance to stakeholders.\",\n  \"meets\": \"Yes\",\n  \"sufficiency\": \"complete\",\n  \"missing\": \"\",\n  \"evidence\": [\n    {\n      \"id\": \"E1\",\n      \"title\": \"security-policy-2026.pdf\",\n      \"source_url\": \"/kb/doc/c7eade6e1e01acde9d0d31bb\",\n      \"quote\": \"Alder & Finch Cloud Services holds a current SOC 2 Type II report and an ISO 27001 certification. Both are audited every year by an independent assessor and the reports are available on request.\"\n    }\n  ],\n  \"claims\": [\n    {\n      \"text\": \"Alder & Finch Cloud Services holds a current SOC 2 Type II report.\",\n      \"evidence_ids\": [\"E1\"]\n    },\n    {\n      \"text\": \"The SOC 2 Type II certification is audited yearly by an independent assessor.\",\n      \"evidence_ids\": [\"E1\"]\n    },\n    {\n      \"text\": \"The SOC 2 Type II report is available upon request.\",\n      \"evidence_ids\": [\"E1\"]\n    }\n  ],\n  \"assumptions\": [],\n  \"risks\": [],\n  \"followups\": [\"Confirm if the report needs to be provided during the proposal submission.\"]\n}\n```",
+    "latency_s": 19.55,
     "usage": {
-      "input_tokens": 2262,
-      "output_tokens": 326
+      "input_tokens": 2495,
+      "output_tokens": 384
+    }
+  },
+  "C5#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"\\\"Alder & Finch Cloud Services holds a current SOC 2 Type II report\\\" states this directly.\"}, {\"id\": \"C2\", \"verdict\": \"supported\", \"reason\": \"\\\"Both are audited every year by an independent assessor\\\" includes the SOC 2 Type II report.\"}, {\"id\": \"C3\", \"verdict\": \"supported\", \"reason\": \"\\\"The reports are available on request\\\" includes the SOC 2 Type II report.\"}]}",
+    "latency_s": 9.13,
+    "usage": {
+      "input_tokens": 685,
+      "output_tokens": 120
     }
   }
 }

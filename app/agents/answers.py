@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from app.agents import grounding, kb_search, lifecycle, runner, states
+from app.agents import grounding, kb_search, lifecycle, runner, states, verify
 from app.agents.kb_search import RetrievedContext
 from app.agents.normalize import normalize_answer, normalize_draft
 from app.agents.untrusted import fence, guidance_block
@@ -20,7 +20,9 @@ _COMPLIANCE_FIELDS = (
     '- "sufficiency": "complete", "partial", "none", "needs_sme" or "conflict" (how well the sources cover the '
     'requirement; with "none" or "needs_sme" leave answer_markdown empty and evidence empty)\n'
     '- "missing": what the sources do not cover, in one short phrase (empty when complete)\n'
-    '- "evidence": array of {"title", "source_url", "quote"}\n'
+    '- "evidence": array of {"id" ("E1", "E2"...), "title", "source_url", "quote" (verbatim from the source)}\n'
+    '- "claims": array of {"text", "evidence_ids"}: each factual statement the answer makes (a capability, number, '
+    'certification, commitment or name) as one short sentence, with the ids of the evidence entries that support it\n'
     '- "assumptions": array of strings\n'
     '- "risks": array of strings\n'
     '- "followups": array of strings\n'
@@ -191,6 +193,7 @@ def answer_single_requirement(**kwargs: Any) -> dict[str, Any]:
             citations=len(kb_search.cited_urls(answer)),
             answer__chars=len(str(answer.get("answer_markdown", ""))),
             answer__state=str(answer.get("state", "")),
+            verification__status=str((answer.get("verification") or {}).get("status", "")),
             outcome="ok",
         )
         return answer
@@ -276,7 +279,9 @@ def _answer_single_requirement(
         answer["requirement_id"] = req_id
         answer["kb_evidence_found"] = context.found
         grounding.note_removed(answer, grounding.ground_fields(answer, ("answer_markdown",), given))
-        return states.finalize(answer, requirement, docs=context.docs, web_grounded=bool(run_result.annotation_urls))
+        web_grounded = bool(run_result.annotation_urls)
+        settled = states.finalize(answer, requirement, docs=context.docs, web_grounded=web_grounded)
+        return verify.verify_answer(settled, requirement, docs=context.docs, web_grounded=web_grounded)
     except (ValueError, IndexError):
         # The reply was not the JSON we asked for. Its text is not kept as an answer: it is a failed generation.
         logger.warning("Requirement %s: the model did not return a usable answer object", req_id)

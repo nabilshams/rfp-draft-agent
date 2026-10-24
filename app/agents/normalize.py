@@ -32,8 +32,14 @@ def _strings(value: Any) -> list[str]:
 def _evidence(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
+    # An entry's id ("E1"...) is what the answer's claims refer to, so it must survive until the claims are checked
     return [
-        {"title": _text(e.get("title")), "source_url": _text(e.get("source_url")), "quote": _text(e.get("quote"))}
+        {
+            "title": _text(e.get("title")),
+            "source_url": _text(e.get("source_url")),
+            "quote": _text(e.get("quote")),
+            **({"id": _text(e["id"]).strip()} if _text(e.get("id")).strip() else {}),
+        }
         for e in value
         if isinstance(e, dict)
     ]

@@ -24,6 +24,10 @@ _LABELS = {
     "false_answer_rate": ("False answers", "unsupported requirements that were answered anyway"),
     "answer_correctness": ("Answer correctness", "answers that state the expected fact and not the stale one"),
     "compliance_correctness": ("Compliance correctness", "Yes/Partial/No matches what the sources support"),
+    "claim_support_rate": ("Claim support", "the writer's own claims that the verifier found supported by their evidence"),
+    "injection_recall": ("Injected errors caught", "deliberately wrong claims the verifier did not accept (target 80%+)"),
+    "injection_false_positive_rate": ("Correct claims rejected", "correct claims the verifier did not accept (target 10% or less)"),
+    "deterministic_catch_rate": ("Caught without a model", "fabricated quotes, uncited claims and wrong figures caught by rules alone"),
 }
 
 
@@ -32,12 +36,23 @@ def to_dict(run: EvalRun, *, input_price: float | None = None, output_price: flo
     cost = metrics.estimate_cost(summary, input_price, output_price)
     if cost is not None:
         summary["cost_per_requirement_usd"] = cost
+    verification_cost = metrics.estimate_cost(
+        {
+            "input_tokens_per_requirement": summary.get("verification_input_tokens_per_call"),
+            "output_tokens_per_requirement": summary.get("verification_output_tokens_per_call"),
+        },
+        input_price,
+        output_price,
+    )
+    if verification_cost is not None:
+        summary["verification_cost_per_requirement_usd"] = verification_cost
     return {
         "variant": run.variant,
         "mode": run.mode,
         "metrics": summary,
         "cases": [asdict(c) for c in run.cases],
         "requirements": [asdict(s) for s in run.scores],
+        "injections": [asdict(o) for o in run.injections],
     }
 
 
@@ -66,6 +81,10 @@ def to_markdown(report: dict[str, Any], baseline: dict[str, Any] | None = None) 
         ("input_tokens_per_requirement", "Input tokens per requirement", ""),
         ("output_tokens_per_requirement", "Output tokens per requirement", ""),
         ("cost_per_requirement_usd", "Estimated cost per requirement", "USD"),
+        ("verification_latency_mean_s", "Verification latency per requirement (mean)", "s"),
+        ("verification_input_tokens_per_call", "Verification input tokens per call", ""),
+        ("verification_output_tokens_per_call", "Verification output tokens per call", ""),
+        ("verification_cost_per_requirement_usd", "Estimated verification cost per requirement", "USD"),
     ):
         if summary.get(name) is not None:
             lines.append(f"| {label} | {summary[name]} {unit}".rstrip() + " | | recorded from the live run |")
@@ -79,6 +98,16 @@ def to_markdown(report: dict[str, Any], baseline: dict[str, Any] | None = None) 
     extras = [(c["id"], text) for c in report["cases"] for text in c["extra"]]
     if extras:
         lines += ["", "Extracted but not in the golden list:", ""] + [f"- {case}: {text}" for case, text in extras]
+
+    injected = report.get("injections", [])
+    if injected:
+        missed = [o for o in injected if not o["ok"]]
+        lines += ["", f"## Injected claims ({len(injected)}; {len(missed)} not handled as expected)", ""]
+        lines += [
+            f"- **{o['id']}** ({o['kind']}, should be {'rejected' if o['expect'] == 'wrong' else 'accepted'}): "
+            f"verdict {o['verdict']} by {o['checked_by'] or 'nobody'}. {o['claim'][:90]}"
+            for o in missed
+        ] or ["All handled as expected."]
 
     problems = [r for r in report["requirements"] if r["problems"]]
     lines += ["", f"## Problems ({len(problems)} of {len(report['requirements'])} requirements)", ""]
