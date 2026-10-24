@@ -113,7 +113,7 @@ class TestSavingAnswers:
         began = next(e for e in events if e["action"] == "draft.started")
         assert began["actor"] == "user-a" and began["details"]["job_id"] == started["job_id"]
         finished = next(e for e in events if e["action"] == "draft.finished")
-        assert finished["details"] == {"job_id": started["job_id"], "outcome": "ok", "saved": 3, "changed_meanwhile": 0, "failed": 0}
+        assert finished["details"] == {"job_id": started["job_id"], "outcome": "ok", "saved": 3, "changed_meanwhile": 0, "failed": 0, "reused": 0}
 
     async def test_the_job_reports_the_saved_answers(self, api, worker, script):  # noqa: F811
         project = await make_project(api)

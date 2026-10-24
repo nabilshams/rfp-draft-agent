@@ -86,6 +86,7 @@ def main() -> int:
         responses, requirements = sink.document_inputs()
         check("builds the documents from every answer, and every failure, in the project", len(responses) == 3 and len(requirements) == 130)
         stored = service.get_requirement(store, project_id, "R2", user, settings)
+        check("keeps each item's kind, response type and repeat", all(k in stored for k in ("item_kind", "response_type", "duplicate_of")))
         check("keeps the claims and their verdicts with the answer", stored["verification"] == "flagged" and stored["answer"]["claims"][0]["evidence_ids"] == ["E1"])
         check("keeps evidence details on the answer", service.get_requirement(store, project_id, "R2", user, settings)["answer"]["evidence"][0]["page"] == 3)
     finally:

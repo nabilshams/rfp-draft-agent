@@ -14,6 +14,8 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Short = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
 Oid = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._@-]{0,64}$")]
 Status = Literal["extracted", "drafted", "edited", "approved"]
+Kind = Literal["question", "mandatory", "optional", "instruction", "evaluation_criterion", "deadline", "submission_rule"]
+ResponseType = Literal["narrative", "yes_no", "table", "attachment"]
 Meets = Literal["Yes", "Partial", "No"]
 
 
@@ -26,6 +28,9 @@ class ProjectCreate(BaseModel):
     rfp_id: RfpId | None = None
     filename: Filename | None = None  # which file of the RFP, when it has several
     requirements: RedactedRecords | None = None
+    # How the RFP is read: "local" (patterns and table columns) or "ai" (the model reads every part; the project then
+    # has to be reviewed and confirmed before it is drafted)
+    extractor: Literal["local", "ai"] = "local"
     share_with_groups: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
@@ -50,6 +55,10 @@ class RequirementUpdate(BaseModel):
     text: Annotated[RedactedText, StringConstraints(min_length=1, max_length=5000)] | None = None
     category: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)] | None = None
     priority: Literal["mandatory", "preferred", "standard"] | None = None
+    item_kind: Kind | None = None  # what the item is: a question, a requirement, an instruction, a date...
+    response_type: ResponseType | None = None
+    evidence_required: bool | None = None
+    duplicate_of: Annotated[str, StringConstraints(pattern=r"^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$")] | None = None  # "" ungroups
     status: Status | None = None
     assignee: Oid | None = None
     assignee_name: Short | None = None

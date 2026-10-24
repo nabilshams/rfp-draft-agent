@@ -323,18 +323,41 @@ answers** and an **audit trail**. See [The project ledger](#the-project-ledger).
 
 | Endpoint | What it does |
 |---|---|
-| `POST /projects` | `{ "name", "rfp_id" }` extracts the RFP's requirements into a new project (or send `"requirements": [...]` yourself). Optional `"share_with_groups": ["group-id"]`. Returns the whole project (201) |
+| `POST /projects` | `{ "name", "rfp_id" }` extracts the RFP's requirements into a new project (or send `"requirements": [...]` yourself). `"extractor": "ai"` has the model read every part of the document instead of the patterns (see [`POST /rfp/extract-ai`](#post-rfpextract-ai)). Optional `"share_with_groups": ["group-id"]`. Returns the whole project (201) |
 | `GET /projects` | The projects you own or that are shared with one of your groups, newest first |
 | `GET /projects/{id}` | The project, its requirements with their current answers, and counts by status. 404 if you can't open it |
 | `PATCH /projects/{id}` | Rename, or change who it is shared with (owner or admin) |
 | `DELETE /projects/{id}` | Delete it with all its answers and history (owner or admin) |
-| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder, has conflicting evidence, or has a claim its evidence does not support cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
+| `POST /projects/{id}/confirm-extraction` | Say you have reviewed the requirements the model extracted (see [Projects](#projects-the-ledger)); a project read by the model cannot be drafted until somebody has. Harmless on any other project |
+| `PATCH /projects/{id}/requirements/{rid}` | Edit `text`, `category`, `priority`, `item_kind`, `response_type`, `evidence_required`, `duplicate_of` (`""` ungroups), `assignee`, `assignee_name` or `status` (`extracted`, `drafted`, `edited`, `approved`; `needs_input` is set by drafting, and an answer that is a placeholder, has conflicting evidence, or has a claim its evidence does not support cannot be approved, 409). Send `expected_rev` to be refused with 409 if somebody changed it since you looked |
 | `GET` / `POST /projects/{id}/requirements/{rid}/answers` | List every version, newest first; add a version (`answer_markdown`, optional `meets`, `evidence`, `assumptions`, `risks`, `followups`) or make an earlier one current again (`{"restore_version": 2}`, recorded as a new version) |
 | `GET /projects/{id}/calibration` | How each confidence band has fared with reviewers: per band, the model answers accepted as drafted, edited by a person, or still pending, and the edit rate (see [Confidence](#confidence-bands)) |
 | `GET /projects/{id}/events` | The audit trail (who, what, when), newest first; `rid`, `limit` and `offset` narrow and page it |
 | `POST /projects/{id}/draft` | Draft the project in the background (202). Body: `client_id`, `kb_project_id` (the knowledge-base project segment to search), optional `solution_area`, `tone`, `approach`, `context`, `allow_web_search`, and `rids` to redo specific requirements |
 | `GET /projects/{id}/draft` | The latest draft: `job` (status, started_by, processed/total, `downloads`), `running`, `interrupted`, `remaining` (requirements still without an answer), `needs_input` (answers that are placeholders for a person), `failed`, `flagged` (answers with a claim the verifier found unsupported or contradicted) and `low_confidence` |
 | `POST /projects/{id}/draft/cancel` | Ask the running draft to stop (whoever started it, the project owner or an admin). Answers already saved are kept |
+
+**What the project holds about the RFP (#32).** Each requirement keeps its `item_kind` (the ledger's own `kind` says it
+is a requirement document), `response_type`, `evidence_required`, `implicit` and `duplicate_of`; the project keeps the
+RFP's `deadlines` (with ISO dates), `submission_rules` and `extraction` (`method`: `local`, `ai` or `supplied`;
+`confirmed`; the model's `warnings` and `coverage`).
+- **A draft works on the items that are answered** (`question`, `mandatory`, `optional`) **and are not repeats.** An
+  instruction, evaluation criterion, date or submission rule is not drafted (instructions and criteria reach the drafting
+  as guidance instead), and the draft status counts only what is left to draft.
+- **A repeated question is answered once.** The first item is drafted; when its answer is saved each repeat gets the same
+  answer as a new version (`answer.reused_from`), including its evidence, claims and confidence. A repeat a person has
+  answered or approved keeps their answer; a repeat whose answer is a model's is replaced when the first is redrafted.
+  Name a repeat in `rids` to draft it on its own, or ungroup it (`duplicate_of: ""`). Grouping is edited in the ledger:
+  an item can only repeat an *answered* first item, never another repeat; moving an item moves its repeats with it, and
+  an item that stops being answered releases them.
+- **Review before drafting a model-read project.** A project created with `"extractor": "ai"` starts unconfirmed: edit
+  anything the model got wrong (kind, response type, repeats, text), then `POST /projects/{id}/confirm-extraction`
+  (recorded in the audit trail). Drafting it before that is a 409. Projects read by the patterns, or created from
+  requirements you send, need no confirming. The page shows the dates, how to submit, the model's warnings and the
+  confirm button above the requirements, a kind/response-type/evidence/"same as" tag on each item, and a form to change
+  them.
+- Not done: the writer is not yet told an item's response type (a `yes_no` item is still drafted as a narrative), and
+  related-but-different questions are not grouped, only repeats.
 
 **Drafting a project.** Each answer is written to the ledger as a new answer version the moment the model produces it
 (source `model`, with the job id), so reloading the project shows answers appearing, and nothing is lost if the draft

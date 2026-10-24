@@ -369,9 +369,15 @@ def guidance_text(extraction: RFPExtractionResult) -> str:
     parts: list[str] = []
     if extraction.evaluation_criteria:
         parts.append("Evaluation criteria:\n" + "\n\n".join(extraction.evaluation_criteria))
-    details = extraction.response_instructions.get("details")
-    if details:
-        parts.append("Response instructions:\n" + str(details))
+    details = str(extraction.response_instructions.get("details") or "")
+    # An instruction anywhere in the RFP ("each answer shall be no longer than 200 words") is not drafted as a
+    # requirement, so it has to reach the drafting as guidance
+    extra = [r.text for r in extraction.requirements if r.kind == "instruction" and r.text not in details]
+    if details or extra:
+        parts.append("Response instructions:\n" + "\n".join(filter(None, [details, *extra])))
+    criteria = [r.text for r in extraction.requirements if r.kind == "evaluation_criterion"]
+    if criteria and not extraction.evaluation_criteria:
+        parts.append("Evaluation criteria:\n" + "\n\n".join(criteria))
     return "\n\n".join(parts)
 
 

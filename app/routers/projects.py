@@ -45,11 +45,12 @@ def create_project(
     project (requirements included).
     """
     guidance = ""
+    extraction = None
     requirements = list(body.requirements or [])
     if body.rfp_id:
         rfp = load_rfp(settings, user, body.rfp_id, body.filename)  # 404 unless the RFP is yours
-        inputs = prepare_draft(requirements, rfp)
-        requirements, guidance = inputs.requirements, inputs.guidance
+        inputs = prepare_draft(requirements, rfp, extractor=body.extractor, settings=settings)
+        requirements, guidance, extraction = inputs.requirements, inputs.guidance, inputs.extraction
     return service.create_project(
         store,
         settings,
@@ -59,6 +60,7 @@ def create_project(
         rfp_id=body.rfp_id,
         guidance=guidance,
         groups=body.share_with_groups,
+        extraction=extraction,
     )
 
 
@@ -190,6 +192,18 @@ def list_events(
     """The audit trail: who changed what and when, newest first."""
     events = service.list_events(store, project_id, user, settings, rid=rid, limit=limit, offset=offset)
     return {"events": events, "count": len(events), "next_offset": offset + len(events)}
+
+
+@router.post("/{project_id}/confirm-extraction", dependencies=[Depends(rate_limited)])
+def confirm_extraction(
+    project_id: ProjectId,
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    store: LedgerStore = Depends(ledger),
+):
+    """Say that you have reviewed the requirements the model extracted. A project read by the model cannot be drafted
+    until somebody has (edit anything wrong first: kind, response type, repeats, text)."""
+    return service.confirm_extraction(store, settings, user, project_id)
 
 
 @router.get("/{project_id}/calibration")

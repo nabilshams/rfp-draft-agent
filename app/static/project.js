@@ -85,14 +85,21 @@ function renderAllRequirements() {
 /** Counts, the draft button and the data the older document-generation step reads. */
 function syncPageState() {
   const reqs = [...projectReqs.values()];
-  const counts = { extracted: 0, drafted: 0, edited: 0, approved: 0, needs_input: 0, flagged: 0 };
-  reqs.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const counts = { extracted: 0, drafted: 0, edited: 0, approved: 0, needs_input: 0, flagged: 0, not_answered: 0, repeats: 0 };
+  reqs.forEach(r => {
+    if (!isAnswered(r)) counts.not_answered += 1; // instructions, dates and rules are not answered
+    else if (isRepeat(r) && !r.answer) counts.repeats += 1; // a repeat takes the first one's answer
+    else counts[r.status] = (counts[r.status] || 0) + 1;
+  });
   counts.flagged = reqs.filter(r => r.verification === 'flagged').length; // not a status: it overlaps with them
   counts.low_confidence = reqs.filter(r => r.confidence === 'low' && r.answer).length;
   $('extractSummary').innerHTML = countsHtml(counts, reqs.length);
   const remaining = counts.extracted;
-  $('btnDraft').textContent = remaining ? 'Draft unanswered requirements (' + remaining + ')' : 'Everything has an answer';
-  $('btnDraft').disabled = projectRunning || remaining === 0;
+  const unconfirmed = Boolean(currentProject && currentProject.extraction && currentProject.extraction.confirmed === false);
+  $('btnDraft').textContent = unconfirmed ? 'Confirm the requirements first'
+    : remaining ? 'Draft unanswered requirements (' + remaining + ')' : 'Everything has an answer';
+  $('btnDraft').disabled = projectRunning || remaining === 0 || unconfirmed;
+  $('projectRecord').innerHTML = projectRecordHtml(currentProject);
 
   extractedRequirements = reqs.map(r => ({ id: r.rid, text: r.text, category: r.category, priority: r.priority, type: r.type }));
   extractedQuestions = reqs.filter(r => r.type === 'question').map(r => r.text);
@@ -174,10 +181,8 @@ async function createProjectFromRfp(mode) {
     share_with_groups: groups,
   };
   try {
-    if (mode === 'ai') {
-      const ai = await postJson('/rfp/extract-ai', { rfp_id: currentRfpId, filename: currentFilename });
-      body.requirements = ai.requirements;
-    }
+    // The server reads the RFP, so the dates, submission rules and how it was read are kept with the project
+    if (mode === 'ai') body.extractor = 'ai';
     showProject(await postJson('/projects', body));
     toast('Project created with ' + projectReqs.size + ' requirements.');
     loadProjectList();
@@ -320,6 +325,41 @@ document.addEventListener('click', async e => {
       return;
     }
     case 'save-answer': return saveAnswer(button);
+    case 'edit-type': {
+      const area = extraArea(rid);
+      if (area && req) area.innerHTML = itemTypeFormHtml(req);
+      return;
+    }
+    case 'save-type': {
+      const block = button.closest('.req-block');
+      const changes = {
+        item_kind: block.querySelector('.type-kind').value,
+        response_type: block.querySelector('.type-response').value,
+        evidence_required: block.querySelector('.type-evidence').checked,
+        duplicate_of: block.querySelector('.type-repeat').value.trim(),
+        expected_rev: Number(button.dataset.rev),
+      };
+      return changeRequirement(async () => {
+        const updated = await patchJson(requirementPath(rid), changes);
+        await refreshProject(true); // moving an item moves its repeats too
+        return updated;
+      }, 'Saved.');
+    }
+    case 'ungroup':
+      return changeRequirement(async () => {
+        const updated = await patchJson(requirementPath(rid), { duplicate_of: '', expected_rev: Number(button.dataset.rev) });
+        await refreshProject(true);
+        return updated;
+      }, 'It will be answered on its own.');
+    case 'confirm-extraction': {
+      try {
+        const project = await postJson(projectPath('/confirm-extraction'), {});
+        currentProject = { ...currentProject, ...project };
+        syncPageState();
+        toast('Confirmed. You can draft now.');
+      } catch (err) { toast('Could not confirm: ' + err.message, 'error'); }
+      return;
+    }
     case 'approve':
       return changeRequirement(() => patchJson(requirementPath(rid), { status: 'approved', expected_rev: req.rev }), 'Approved.');
     case 'restore':

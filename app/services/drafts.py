@@ -14,7 +14,8 @@ from app.auth.access import require_rfp_access
 from app.auth.entra import UserClaims
 from app.config import Settings
 from app.ingestion.pipeline import extract_requirements
-from app.ingestion.rfp_extract import guidance_text
+from app.ingestion.rfp_extract import RFPExtractionResult, guidance_text
+from app.services.extraction import extract_with_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +46,31 @@ class DraftInputs:
     requirements: list[dict[str, Any]]
     # The customer's evaluation criteria and response instructions, from the RFP file itself (redacted).
     guidance: str = ""
+    extraction: RFPExtractionResult | None = None  # the whole extraction, for the project record (dates, method...)
 
 
-def prepare_draft(requested: list[dict[str, Any]], rfp: RfpFile) -> DraftInputs:
+def prepare_draft(
+    requested: list[dict[str, Any]], rfp: RfpFile, *, extractor: str = "local", settings: Settings | None = None
+) -> DraftInputs:
     """What a draft works from: the requirements to answer, and the RFP's own guidance on how to answer.
 
     The requirements are those the client sends (keeping the IDs it showed the user), else extracted.
     The guidance is always taken from the file, never from the request.
     """
     try:
-        extraction = extract_requirements(rfp.filename, rfp.data)
+        if extractor == "ai" and settings is not None:
+            extraction = extract_with_model(rfp.filename, rfp.data, settings)  # 413 / 502 are for the caller
+        else:
+            extraction = extract_requirements(rfp.filename, rfp.data)
+    except HTTPException:
+        raise
     except Exception:
         if not requested:
             raise
         logger.exception("Could not read guidance from %s; drafting without it", rfp.filename)
         return DraftInputs(requirements=requested)
     requirements = requested or [r.model_dump() for r in extraction.requirements]
-    return DraftInputs(requirements=requirements, guidance=guidance_text(extraction))
+    return DraftInputs(requirements=requirements, guidance=guidance_text(extraction), extraction=extraction)
 
 
 def web_search_choice(requested: bool, settings: Settings) -> bool:
