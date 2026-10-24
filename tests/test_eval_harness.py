@@ -321,7 +321,7 @@ class TestCommand:
         script = load_script()
         stricter = tmp_path / "baseline.json"
         stricter.write_text(
-            json.dumps({"tolerance": 0.0, "metrics": {"answer_correctness": 0.99, "false_answer_rate": 0.0}}),
+            json.dumps({"tolerance": 0.0, "metrics": {"claim_support_rate": 0.99, "false_answer_rate": 0.0}}),
             encoding="utf-8",
         )
         monkeypatch.setattr(script, "BASELINE", stricter)

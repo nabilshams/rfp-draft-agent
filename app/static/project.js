@@ -88,6 +88,7 @@ function syncPageState() {
   const counts = { extracted: 0, drafted: 0, edited: 0, approved: 0, needs_input: 0, flagged: 0 };
   reqs.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
   counts.flagged = reqs.filter(r => r.verification === 'flagged').length; // not a status: it overlaps with them
+  counts.low_confidence = reqs.filter(r => r.confidence === 'low' && r.answer).length;
   $('extractSummary').innerHTML = countsHtml(counts, reqs.length);
   const remaining = counts.extracted;
   $('btnDraft').textContent = remaining ? 'Draft unanswered requirements (' + remaining + ')' : 'Everything has an answer';
@@ -99,7 +100,7 @@ function syncPageState() {
     requirement_id: r.rid, requirement_text: r.text, answer_markdown: r.answer.answer_markdown, meets: r.answer.meets,
     evidence: r.answer.evidence, assumptions: r.answer.assumptions, risks: r.answer.risks, followups: r.answer.followups,
     kb_evidence_found: r.answer.kb_evidence_found, state: r.state, missing: r.missing,
-    claims: r.answer.claims, verification: r.answer.verification,
+    claims: r.answer.claims, verification: r.answer.verification, confidence: r.answer.confidence,
   }));
   updateDocGenStatus();
 }

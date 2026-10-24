@@ -44,6 +44,13 @@ const VERIFICATION_STYLES = {
   flagged: 'background:#fde7e9;color:#a4262c',
   unchecked: 'background:#f3f2f1;color:#605e5c',
 };
+// The confidence band and the reasons behind it (see app/agents/confidence.py)
+const CONFIDENCE_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
+const CONFIDENCE_STYLES = {
+  high: 'background:#e8f5e9;color:var(--success)',
+  medium: 'background:#fff4ce;color:#8a6d00',
+  low: 'background:#fde7e9;color:#a4262c',
+};
 const VERDICT_STYLES = {
   supported: 'color:var(--success)', partial: 'color:#8a6d00', unsupported: 'color:#a4262c', contradicted: 'color:#a4262c',
 };
@@ -79,6 +86,26 @@ function evidenceItemHtml(e) {
   const unverified = e.quote_verified === false
     ? ' <span style="color:#a4262c" title="The quoted text was not found in the source it cites">&#9888; quote not found in the source</span>' : '';
   return '<li style="font-size:11px;padding:3px 0;border-bottom:1px solid #f0f0f0">' + id + link + tag + place + quote + unverified + '</li>';
+}
+
+/** The band as a badge (empty for a person's own answer). *band* is the band name or the whole confidence object. */
+function confidenceBadgeHtml(band) {
+  const name = band && typeof band === 'object' ? band.band : band;
+  if (!(name in CONFIDENCE_LABELS)) return '';
+  return '<span class="badge" style="' + CONFIDENCE_STYLES[name] + '" title="How far this answer can be trusted, and why">' +
+    esc(CONFIDENCE_LABELS[name] + ' confidence') + '</span>';
+}
+
+/** Why the band is what it is: what lowers it first, then what supports it. Low and Medium are open. */
+function confidenceReasonsHtml(confidence) {
+  const reasons = (confidence && confidence.reasons) || [];
+  if (!reasons.length || !(confidence.band in CONFIDENCE_LABELS)) return '';
+  const rows = reasons.map(r =>
+    '<li style="font-size:11px;padding:2px 0"><span style="font-weight:700;color:' + (r.effect === 'lowers' ? '#a4262c' : 'var(--success)') + '">' +
+    (r.effect === 'lowers' ? '&minus;' : '+') + '</span> ' + esc(r.text) + '</li>').join('');
+  return '<details style="margin-top:6px"' + (confidence.band === 'high' ? '' : ' open') +
+    '><summary style="font-size:11px;cursor:pointer"><strong>Why ' + esc(CONFIDENCE_LABELS[confidence.band].toLowerCase()) + ' confidence</strong></summary>' +
+    '<ul style="list-style:none;margin:4px 0 0 0;padding:0">' + rows + '</ul></details>';
 }
 
 function verificationBadgeHtml(verification) {
@@ -129,11 +156,11 @@ function answerBodyHtml(resp) {
     ? '<div style="margin-top:4px;font-size:11px;color:#8a6d00"><strong>Missing:</strong> ' + esc(resp.missing) + '</div>' : '';
   return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
       '<span style="font-weight:700;font-size:13px' + (meets ? '' : ';color:var(--text-muted)') + '" class="' + (MEETS_CLASSES[meets] || '') + '">' + esc(meets || 'Not assessed') + '</span>' +
-      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' + stateBadgeHtml(resp.state) + verificationBadgeHtml(resp.verification) + '</div>' +
+      '<span style="font-size:11px;color:var(--text-muted)">Compliance</span>' + stateBadgeHtml(resp.state) + verificationBadgeHtml(resp.verification) + confidenceBadgeHtml(resp.confidence) + '</div>' +
     body + missing +
     (evidence ? '<div style="margin-top:6px"><strong style="font-size:11px">Evidence:</strong><ul style="list-style:none;margin:4px 0 0 0;padding:0">' + evidence + '</ul></div>' : '') +
     (resp.kb_evidence_found === false ? '<div style="margin-top:6px;font-size:11px;color:#8a6d00">&#9888; No internal knowledge-base evidence was found for this requirement.</div>' : '') +
-    claimsHtml(resp) +
+    confidenceReasonsHtml(resp.confidence) + claimsHtml(resp) +
     listed('Assumptions', resp.assumptions) + listed('Risks', resp.risks, 'var(--error)');
 }
 
@@ -194,7 +221,7 @@ function projectRequirementHtml(req, running) {
     '<div style="padding:10px 12px;display:flex;gap:8px;align-items:flex-start;background:#fafafa;border-bottom:1px solid var(--border)">' +
       '<span style="font-weight:700;color:var(--primary);min-width:40px;font-size:12px">' + esc(req.rid) + '</span>' +
       kind + '<span class="badge ' + priorityClass(req.priority) + '" style="margin-top:1px">' + esc(req.priority) + '</span>' + category +
-      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' + assignee + anchor + statusBadgeHtml(req.status) +
+      '<span style="flex:1;font-size:12px">' + esc(req.text) + '</span>' + assignee + anchor + confidenceBadgeHtml(req.confidence) + statusBadgeHtml(req.status) +
     '</div>' +
     '<div class="req-response" id="' + esc(respDomId(req.rid)) + '" style="padding:10px 12px;font-size:12px">' +
       requirementBodyHtml(req, running) + '</div></div>';
@@ -204,7 +231,7 @@ function countsHtml(counts, total) {
   const item = (label, n, color) => '<span style="color:' + color + '"><strong>' + Number(n) + '</strong> ' + label + '</span>';
   return '<div style="display:flex;gap:14px;font-size:12px;flex-wrap:wrap">' +
     item('no answer', counts.extracted || 0, 'var(--text-muted)') + item('drafted', counts.drafted || 0, '#0f6cbd') +
-    item('needs input', counts.needs_input || 0, '#a4262c') + item('flagged', counts.flagged || 0, '#a4262c') +
+    item('needs input', counts.needs_input || 0, '#a4262c') + item('flagged', counts.flagged || 0, '#a4262c') + item('low confidence', counts.low_confidence || 0, '#a4262c') +
     item('edited', counts.edited || 0, '#8a6d00') + item('approved', counts.approved || 0, 'var(--success)') +
     '<span style="color:var(--text-muted)">of ' + Number(total) + '</span></div>';
 }
@@ -296,7 +323,7 @@ function projectListHtml(projects) {
 if (typeof module !== 'undefined') {
   module.exports = {
     meetsLabel, priorityClass, normReqId, respDomId, blockDomId, formatTime, evidenceItemHtml, answerBodyHtml,
-    statusBadgeHtml, stateBadgeHtml, verificationBadgeHtml, claimsHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
+    statusBadgeHtml, stateBadgeHtml, verificationBadgeHtml, confidenceBadgeHtml, confidenceReasonsHtml, claimsHtml, answerMetaHtml, requirementActionsHtml, projectRequirementHtml, countsHtml, editFormHtml,
     versionsHtml, describeEvent, eventsHtml, projectListHtml,
   };
 }

@@ -25,7 +25,7 @@ from typing import Any
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from fastapi import HTTPException
 
-from app.agents import states, verify
+from app.agents import confidence, states, verify
 from app.auth.access import can_manage
 from app.auth.entra import UserClaims
 from app.config import Settings
@@ -180,6 +180,7 @@ def response_of(requirement: Doc) -> dict[str, Any]:
         "missing": requirement.get("missing", ""),
         "claims": answer.get("claims", []),
         "verification": answer.get("verification", {}),
+        "confidence": answer.get("confidence", {}),
     }
 
 
@@ -281,6 +282,7 @@ def status(store: LedgerStore, settings: Settings, user: UserClaims, project_id:
     needs_input = sum(1 for r in requirements if r.get("status") == "needs_input")
     failed = sum(1 for r in requirements if r.get("state") == states.FAILED and not r.get("answer_version"))
     flagged = sum(1 for r in requirements if r.get("verification") == verify.FLAGGED)
+    low_confidence = sum(1 for r in requirements if r.get("confidence") == confidence.LOW and r.get("answer_version"))
     claim = project.get("draft_job")
     job = jobs.find_job(settings, claim["id"]) if claim else None
 
@@ -310,6 +312,7 @@ def status(store: LedgerStore, settings: Settings, user: UserClaims, project_id:
         "needs_input": needs_input,
         "failed": failed,
         "flagged": flagged,
+        "low_confidence": low_confidence,
         "total": len(requirements),
     }
 

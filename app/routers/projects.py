@@ -192,6 +192,17 @@ def list_events(
     return {"events": events, "count": len(events), "next_offset": offset + len(events)}
 
 
+@router.get("/{project_id}/calibration")
+def calibration(
+    project_id: ProjectId,
+    user: UserClaims = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    store: LedgerStore = Depends(ledger),
+):
+    """How each confidence band has fared with reviewers: answers accepted as they were, edited, or still pending."""
+    return service.calibration(store, project_id, user, settings)
+
+
 # ── Drafting ─────────────────────────────────────────────
 
 

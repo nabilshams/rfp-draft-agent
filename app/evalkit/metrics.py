@@ -23,6 +23,7 @@ HIGHER_IS_BETTER = (
     "answer_rate",
     "state_correctness",
     "claim_support_rate",
+    "confidence_separation",
     "injection_recall",
     "deterministic_catch_rate",
 )
@@ -100,6 +101,9 @@ class RequirementScore:
     abstention_ok: bool | None = None
     state: str = ""
     verification: str = ""  # the claim verifier's overall status for the answer
+    confidence: str = ""  # the band: high, medium or low
+    confidence_reasons: list[str] = field(default_factory=list)
+    needs_edit: bool | None = None  # a person would have to change this answer (judged without the confidence inputs)
     claims: dict[str, int] = field(default_factory=dict)  # verdict -> number of claims
     state_ok: bool | None = None  # the answer state is one the requirement should end in
     answer_ok: bool | None = None  # contains_any / forbid satisfied (None when the case sets none)
@@ -188,6 +192,9 @@ def score_requirement(
     summary = answer.get("verification") or {}
     score.verification = str(summary.get("status", ""))
     score.claims = {v: int(summary.get(v, 0)) for v in verify.VERDICTS}
+    band = answer.get("confidence") or {}
+    score.confidence = str(band.get("band", ""))
+    score.confidence_reasons = [r["text"] for r in band.get("reasons", []) if r.get("effect") == "lowers"]
     if score.claims[verify.UNSUPPORTED] + score.claims[verify.CONTRADICTED]:
         flagged = [c for c in answer.get("claims", []) if c.get("verdict") in verify.FLAGGED_VERDICTS]
         score.problems.append(
@@ -220,6 +227,11 @@ def score_requirement(
     score.unsupported_final = unsupported_figures(answer.get("answer_markdown", ""), sources)
     if score.unsupported_raw:
         score.problems.append(f"model wrote figures not in the sources: {', '.join(score.unsupported_raw)}")
+    # Whether a person would have to change this answer, judged only on things the confidence band is not made from:
+    # the expected facts, the expected compliance, invented figures, and answering what it should not have.
+    score.needs_edit = (
+        score.answer_ok is False or score.compliance_ok is False or bool(score.unsupported_raw) or score.state_ok is False
+    )
     return score
 
 
@@ -256,6 +268,7 @@ def summarise(scores: list[RequirementScore], expected_total: int, extracted_tot
             sum(s.claims.get(verify.SUPPORTED, 0) for s in answered),
             sum(sum(s.claims.values()) for s in answered),
         ),
+        **confidence_metrics(answered),
         "claims_per_answer": round(mean(sum(s.claims.values()) for s in answered), 2) if answered else None,
         "citation_support_rate": _rate(sum(s.citations_supported for s in scores), cited),
         "unsupported_claim_rate_raw": _rate(sum(1 for s in answered if s.unsupported_raw), len(answered)),
@@ -278,6 +291,26 @@ def estimate_cost(metrics: dict[str, Any], input_price: float | None, output_pri
     if input_price is None or output_price is None or tokens_in is None or tokens_out is None:
         return None
     return round((tokens_in * input_price + tokens_out * output_price) / 1_000_000, 5)
+
+
+def confidence_metrics(answered: list[RequirementScore]) -> dict[str, Any]:
+    """How the confidence bands line up with what a person would have to change.
+
+    Only answers that are answers count: a placeholder is Low by definition and always needs a person, which would make
+    any band look right. ``confidence_separation`` is the edit rate of the Low band minus the High band's (positive =
+    the band orders answers the right way); it is ``None`` unless both bands have answers.
+    """
+    judged = [s for s in answered if s.state in states.ANSWERED and s.needs_edit is not None]
+    out: dict[str, Any] = {}
+    rates: dict[str, float | None] = {}
+    for band in ("high", "medium", "low"):
+        members = [s for s in judged if s.confidence == band]
+        rates[band] = _rate(sum(1 for s in members if s.needs_edit), len(members))
+        out[f"confidence_{band}_answers"] = len(members)
+        out[f"confidence_{band}_edit_rate"] = rates[band]
+    low, high = rates["low"], rates["high"]
+    out["confidence_separation"] = round(low - high, 4) if low is not None and high is not None else None
+    return out
 
 
 def verification_cost(records: list[dict[str, Any]]) -> dict[str, Any]:

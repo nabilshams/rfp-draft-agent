@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # ── Azure AI Foundry ──────────────────────────────────
     foundry_project_endpoint: str = Field(..., alias="FOUNDRY_PROJECT_ENDPOINT")
     foundry_model_deployment_name: str = Field("gpt-4o", alias="FOUNDRY_MODEL_DEPLOYMENT_NAME")
+    # ── Confidence band (see app.agents.confidence): thresholds, in days, fractions and ranks ──
+    confidence_fresh_days: int = Field(730, alias="CONFIDENCE_FRESH_DAYS", ge=0)  # a newer source is "fresh"
+    confidence_stale_days: int = Field(1825, alias="CONFIDENCE_STALE_DAYS", ge=0)  # an older one caps the band at Low
+    confidence_high_support: float = Field(0.9, alias="CONFIDENCE_HIGH_SUPPORT", ge=0, le=1)  # share of claims for High
+    confidence_low_support: float = Field(0.6, alias="CONFIDENCE_LOW_SUPPORT", ge=0, le=1)  # below this: Low
+    confidence_top_rank: int = Field(3, alias="CONFIDENCE_TOP_RANK", ge=1)  # cited sources should rank this well
+    confidence_min_relative_score: float = Field(0.5, alias="CONFIDENCE_MIN_RELATIVE_SCORE", ge=0, le=1)
     # ── Claim verification: a second, independent pass that judges each claim against the evidence it cites ──
     verify_answers: bool = Field(True, alias="VERIFY_ANSWERS")
     # Empty = the same deployment as the writer. A different deployment reduces the errors the two would share

@@ -151,7 +151,7 @@ def stream_per_section(
                     key: result[key]
                     for key in (
                         "assumptions", "risks", "followups", "kb_evidence_found", "generation_failed", "state", "missing",
-                        "claims", "verification",
+                        "claims", "verification", "confidence",
                     )
                     if key in result
                 },
