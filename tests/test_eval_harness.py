@@ -102,10 +102,21 @@ class TestBaselineFindings:
         assert baseline_run.metrics["extraction_recall"] == 1.0
         assert {c.filename.rsplit(".", 1)[-1] for c in baseline_run.cases} == {"docx", "xlsx", "pdf"}
 
-    def test_a_format_instruction_is_a_known_false_positive(self, baseline_run):
-        # "Each answer shall be no longer than 200 words" is extracted as a requirement (tracked in #32)
+    def test_a_format_instruction_is_typed_as_one_and_is_no_longer_a_false_positive(self, baseline_run):
+        # "Each answer shall be no longer than 200 words" used to be drafted as a requirement (the baseline of #29)
         (case,) = [c for c in baseline_run.cases if c.id == "council-docx"]
-        assert case.extra == ["shall be no longer than 200 words"]
+        assert case.extra == [] and case.non_answered_found == case.non_answered_expected == 3
+        assert baseline_run.metrics["extraction_precision"] == 1.0
+
+    def test_extraction_meets_the_agreed_thresholds_for_each_format(self, baseline_run):
+        for fmt in ("pdf", "docx", "xlsx"):
+            assert baseline_run.metrics[f"extraction_recall_{fmt}"] >= verification.TARGET_EXTRACTION_RECALL
+            assert baseline_run.metrics[f"extraction_precision_{fmt}"] >= verification.TARGET_EXTRACTION_PRECISION
+
+    def test_typed_fields_repeats_dates_and_rules_are_read_correctly(self, baseline_run):
+        m = baseline_run.metrics
+        assert m["typed_field_accuracy"] == m["duplicate_grouping_correctness"] == 1.0
+        assert m["non_answered_capture"] == m["deadline_capture"] == 1.0
 
     def test_the_current_policy_beats_the_stale_proposal_for_conflicting_facts(self, baseline_run):
         scores = {(s.case, s.id): s for s in baseline_run.scores}
@@ -274,7 +285,10 @@ class TestGoldenFixtures:
                 recorded = {key.removesuffix("#verify") for key in load_recordings(GOLDEN_DIR, variant, case_id)}
                 assert recorded <= requirement_ids
                 # Only requirements the model is never asked about (routed, or nothing in the knowledge base) lack one
-                unsupported = {r["id"] for c in load_cases() if c.id == case_id for r in c.requirements if not r["supported"]}
+                unsupported = {
+                    r["id"] for c in load_cases() if c.id == case_id for r in c.requirements
+                    if not r["supported"] or r.get("duplicate_of")  # a repeat takes the first one's answer
+                }
                 assert requirement_ids - recorded <= unsupported
 
     def test_the_fixture_index_returns_hits_shaped_like_the_search_service(self):
@@ -299,7 +313,7 @@ class TestReports:
     def test_the_markdown_shows_the_baseline_beside_the_value(self, baseline_run, degraded_run):
         baseline = report.to_dict(baseline_run)["metrics"]
         markdown = report.to_markdown(report.to_dict(degraded_run), baseline)
-        assert "| State correctness | 91.7% | 100.0% |" in markdown
+        assert "| State correctness | 92.0% | 100.0% |" in markdown
 
     def test_cost_appears_when_prices_are_given(self, baseline_run):
         assert "cost_per_requirement_usd" in report.to_dict(baseline_run, input_price=2.5, output_price=10.0)["metrics"]

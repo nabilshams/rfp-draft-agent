@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.ingestion import classify
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,33 @@ class Requirement(BaseModel):
     # Where in the RFP this came from: "p. 3", "¶12", "Table 2, row 5", "Row 14".
     anchor: str = ""
     keywords: list[str] = []
+    # Typed fields (see app.ingestion.classify). Left out, they are worked out from the text.
+    kind: str = ""
+    response_type: str = ""
+    evidence_required: bool = False
+    implicit: bool = False  # inferred rather than stated (only the model-based extractor sets it)
+    duplicate_of: str = ""  # the id of the first item this one repeats: answered once there
+
+    @model_validator(mode="after")
+    def _typed(self) -> Requirement:
+        given = self.model_fields_set
+        if self.priority not in ("mandatory", "preferred", "standard"):
+            self.priority = _classify_priority(self.priority)  # "M", "S", "Critical"...: the sheet's own codes
+        kind = classify.clean(self.kind, classify.KINDS, "")
+        if not kind:
+            kind = "question" if self.type == "question" else classify.kind_of(self.text, self.priority)
+        self.kind = kind
+        self.type = "question" if kind == "question" else "requirement"
+        if classify.clean(self.response_type, classify.RESPONSE_TYPES, "") != self.response_type or not self.response_type:
+            self.response_type = classify.response_type_of(self.text, kind)
+        if "evidence_required" not in given:
+            self.evidence_required = classify.evidence_required_of(self.text, kind)
+        return self
+
+    @property
+    def answered(self) -> bool:
+        """Whether this item is answered in the response (the others shape it, or belong to the project record)."""
+        return self.kind in classify.ANSWERED_KINDS
 
 
 class RFPExtractionResult(BaseModel):
@@ -48,10 +77,45 @@ class RFPExtractionResult(BaseModel):
     questions: list[str] = []
     evaluation_criteria: list[str] = []
     response_instructions: dict[str, Any] = {}
+    # Dates and how to submit, for the project record: ``{"text", "date" (YYYY-MM-DD or ""), "anchor"}`` and strings
+    deadlines: list[dict[str, str]] = []
+    submission_rules: list[str] = []
+    method: str = "local"  # "local" (patterns and table columns) or "ai" (the model read every part of the document)
+    coverage: dict[str, Any] = {}  # for the AI method: how much of the document was read
+    warnings: list[str] = []
 
 
 def requirement_type(text: str) -> str:
     return "question" if text.strip().endswith("?") else "requirement"
+
+
+def finalise(result: RFPExtractionResult) -> RFPExtractionResult:
+    """Group repeats and collect the dates and submission rules into the result (after the ids are final)."""
+    items = result.requirements
+    assign_ids(items)
+    groups = classify.find_duplicates([{"id": r.id, "text": r.text, "kind": r.kind, "response_type": r.response_type} for r in items])
+    for requirement in items:
+        if requirement.duplicate_of and requirement.duplicate_of not in {r.id for r in items}:
+            requirement.duplicate_of = ""  # a reference to nothing
+        requirement.duplicate_of = requirement.duplicate_of or groups.get(requirement.id, "")
+    for requirement in items:  # a repeat points at the first, never at another repeat
+        seen = {requirement.id}
+        target = requirement.duplicate_of
+        while target and target not in seen:
+            seen.add(target)
+            parent = next((r for r in items if r.id == target), None)
+            if parent is None or not parent.duplicate_of:
+                break
+            target = parent.duplicate_of
+        requirement.duplicate_of = target if target and target != requirement.id else ""
+    if not result.deadlines:
+        result.deadlines = [
+            {"text": r.text, "date": classify.parse_date(r.text), "anchor": r.anchor} for r in items if r.kind == "deadline"
+        ]
+    if not result.submission_rules:
+        result.submission_rules = [r.text for r in items if r.kind == "submission_rule"]
+    result.questions = [r.text for r in items if r.type == "question"]
+    return result
 
 
 def assign_ids(requirements: list[Requirement]) -> None:
@@ -357,11 +421,11 @@ def extract_requirements_from_spreadsheet(filename: str, data: bytes) -> RFPExtr
         raw_text = _extract_text_from_excel(data) if not filename.lower().endswith(".csv") else _extract_text_from_csv(data)
         return extract_rfp_structure(raw_text)
 
-    return RFPExtractionResult(
+    return finalise(RFPExtractionResult(
         sections=[{"heading": "Spreadsheet Import", "body": f"{len(requirements)} requirements, {len(questions)} questions"}],
         requirements=requirements,
         questions=questions,
-    )
+    ))
 
 
 def _rows_to_requirements(
@@ -555,11 +619,8 @@ _SECTION_RE = re.compile(
     r"^(?:\d+(?:\.\d+)*\.?\s+|[A-Z]\.\s+|Section\s+\d+)", re.MULTILINE
 )
 
-_SHALL_MUST_RE = re.compile(
-    r"((?:the\s+)?(?:vendor|contractor|offeror|provider|respondent|proposer|bidder)?\s*"
-    r"(?:shall|must|is required to|will be required to)\s+.+?)(?:\.|$)",
-    re.IGNORECASE | re.MULTILINE,
-)
+_SHALL_MUST_RE = re.compile(r"\b(?:shall|must|(?:is|are|will\s+be)\s+required\s+to)\b", re.IGNORECASE)
+_SENTENCE_END = re.compile(r"[.!?](?=\s)")  # "TLS 1.2" is not the end of a sentence
 
 _QUESTION_RE = re.compile(r"^.*\?\s*$", re.MULTILINE)
 
@@ -576,6 +637,22 @@ _RESPONSE_INSTRUCTIONS_RE = re.compile(
 
 
 _GUIDANCE_CHARS = 1500
+
+
+def _statements(body: str) -> list[tuple[int, str]]:
+    """``(offset, sentence)`` for each sentence of *body* that says someone shall or must do something."""
+    found: list[tuple[int, str]] = []
+    for line in re.finditer(r"[^\n]+", body):
+        start = 0
+        for end in [m.end() for m in _SENTENCE_END.finditer(line.group())] + [len(line.group())]:
+            sentence = line.group()[start:end]
+            cell_start = 0
+            for cell in sentence.split(" | "):  # a table row flattened into a line: one cell at a time
+                if cell.strip() and _SHALL_MUST_RE.search(cell):
+                    found.append((line.start() + start + cell_start, cell))
+                cell_start += len(cell) + 3
+            start = end
+    return found
 
 
 def _section_spans(text: str) -> list[tuple[int, str, str]]:
@@ -634,14 +711,14 @@ def extract_rfp_structure(text: str, document: ParsedDocument | None = None) -> 
     # (offset in the text, requirement), merged and ordered by position in the document
     found: list[tuple[int, Requirement]] = []
 
-    # Requirements (shall/must)
+    # Requirements: every sentence with a shall/must in it, whole (with its subject)
     statement_spans: list[tuple[int, int]] = []
-    for m in _SHALL_MUST_RE.finditer(body):
-        req_text = m.group(1).strip()
+    for sentence_start, sentence in _statements(body):
+        req_text = sentence.strip().rstrip(".").strip()
         if len(req_text) < 15:
             continue
-        offset = m.start(1) + (len(m.group(1)) - len(m.group(1).lstrip()))
-        statement_spans.append((m.start(), m.end()))
+        offset = sentence_start + (len(sentence) - len(sentence.lstrip()))
+        statement_spans.append((sentence_start, sentence_start + len(sentence)))
         found.append(
             (
                 offset,
@@ -684,7 +761,6 @@ def extract_rfp_structure(text: str, document: ParsedDocument | None = None) -> 
 
     found.sort(key=lambda item: item[0])
     requirements = [requirement for _, requirement in found]
-    assign_ids(requirements)
 
     # Evaluation criteria
     eval_criteria = [
@@ -698,10 +774,10 @@ def extract_rfp_structure(text: str, document: ParsedDocument | None = None) -> 
         response_instr["section"] = "; ".join(h for h, _ in instruction_sections)
         response_instr["details"] = "\n\n".join(t[:_GUIDANCE_CHARS] for _, t in instruction_sections)
 
-    return RFPExtractionResult(
+    return finalise(RFPExtractionResult(
         sections=[{"heading": heading, "body": text_[:300]} for _, heading, text_ in spans],
         requirements=requirements,
         questions=[r.text for r in requirements if r.type == "question"],
         evaluation_criteria=eval_criteria,
         response_instructions=response_instr,
-    )
+    ))

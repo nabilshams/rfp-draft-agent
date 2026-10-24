@@ -31,7 +31,7 @@
     {"id": "C4", "text": "The vendor must keep all patient data in Australia.", "supported": true,
      "expected_sources": ["security-policy-2026"], "contains_any": [["Australia"]]},
     {"id": "C5", "text": "The vendor shall provide a SOC 2 Type II report.", "supported": true,
-     "expected_sources": ["security-policy-2026"], "contains_any": [["SOC 2"]]},
+     "evidence_required": true, "expected_sources": ["security-policy-2026"], "contains_any": [["SOC 2"]]},
     {"id": "C6", "text": "The vendor must be certified under HITRUST.", "supported": false}
   ]
 }

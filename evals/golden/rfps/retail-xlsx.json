@@ -14,11 +14,12 @@
     ["RT-07", "Provide measurable business outcomes you achieved for government clients.", "S", "experience"],
     ["RT-08", "The service must provide at least 99.99% availability.", "M", "operations"],
     ["RT-09", "Provide pricing for 500 users over a three-year term.", "M", "commercial"],
-    ["RT-10", "State your limitation of liability and indemnification terms.", "M", "legal"]
+    ["RT-10", "State your limitation of liability and indemnification terms.", "M", "legal"],
+    ["RT-11", "Describe the online training you provide for administrators and end users.", "S", "delivery"]
   ],
   "requirements": [
     {"id": "RT-01", "text": "The platform shall support role-based access control with custom roles.", "supported": true,
-     "expected_sources": ["identity-and-access"], "contains_any": [["custom roles"]]},
+     "kind": "mandatory", "expected_sources": ["identity-and-access"], "contains_any": [["custom roles"]]},
     {"id": "RT-02", "text": "What is your typical implementation timeline?", "supported": true,
      "expected_sources": ["delivery-method"], "contains_any": [["12 weeks"]]},
     {"id": "RT-03", "text": "Provide online training for administrators and end users.", "supported": true,
@@ -27,13 +28,15 @@
      "expected_sources": ["accessibility-statement"], "contains_any": [["2.1"], ["WCAG", "Web Content Accessibility"]]},
     {"id": "RT-05", "text": "Describe a similar loyalty platform migration you have delivered.", "supported": true,
      "expected_sources": ["case-study-loyalty"], "contains_any": [["14 weeks", "14-week"]]},
-    {"id": "RT-06", "text": "Does your solution include an on-premises hardware appliance?", "supported": false},
+    {"id": "RT-06", "text": "Does your solution include an on-premises hardware appliance?", "supported": false, "response_type": "yes_no", "kind": "question"},
     {"id": "RT-07", "text": "Provide measurable business outcomes you achieved for government clients.", "supported": false},
     {"id": "RT-08", "text": "The service must provide at least 99.99% availability.", "supported": true,
      "expected_sources": ["security-policy-2026"], "contains_any": [["99.95"]], "forbid": ["99.5%"], "meets_in": ["Partial", "No"]},
     {"id": "RT-09", "text": "Provide pricing for 500 users over a three-year term.", "supported": false,
      "state_in": ["needs_commercial"]},
     {"id": "RT-10", "text": "State your limitation of liability and indemnification terms.", "supported": false,
-     "state_in": ["needs_legal"]}
+     "state_in": ["needs_legal"]},
+    {"id": "RT-11", "text": "Describe the online training you provide for administrators and end users.", "supported": true,
+     "duplicate_of": "RT-03", "kind": "optional", "expected_sources": ["delivery-method"], "contains_any": [["administrators"]]}
   ]
 }

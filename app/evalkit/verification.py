@@ -22,6 +22,9 @@ from typing import Any
 
 from app.agents import confidence, lifecycle, states, verify
 
+# What extraction is held to on each file format (the golden set meets them; a regression below fails CI)
+TARGET_EXTRACTION_RECALL = 0.95
+TARGET_EXTRACTION_PRECISION = 0.9
 TARGET_RECALL = 0.8
 TARGET_FALSE_POSITIVE_RATE = 0.1
 RULE_KINDS = ("fabricated_quote", "quote_from_another_document", "cites_nothing", "wrong_percentage")
