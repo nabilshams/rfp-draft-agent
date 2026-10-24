@@ -178,3 +178,87 @@ class TestSentences:
             Requirement(id="B", text="Describe your other thing entirely here.", duplicate_of="A"),
             Requirement(id="C", text="Describe your third thing entirely different.", duplicate_of="B")]))
         assert [r.duplicate_of for r in result.requirements] == ["", "A", "A"]
+
+# ── Found in review ──────────────────────────────────────
+
+
+class TestARequirementIsNeverMistakenForSomethingThatIsNotDrafted:
+    """The costly direction: anything outside the answered kinds is not drafted."""
+
+    @pytest.mark.parametrize("text", [
+        "The vendor must conduct due diligence on all subcontractors.",
+        "Provide details of any delays due to supplier failure and how these were resolved.",
+        "The system shall be live by 1 July 2026.",
+        "The vendor must deliver the solution on or before 30 June 2026.",
+        "The system must support file uploads of up to 500 MB.",
+        "The network must sustain up to 100 Mbps per user.",
+        "API responses must be in JSON format.",
+        "The vendor must report on profit margins quarterly.",
+        "The solution shall support automatic numbering of invoices.",
+        "The vendor shall provide headings for each section of the user manual.",
+        "The user manual must be written in English.",
+        "The vendor shall deliver training to all 200 staff before go-live.",
+        "Describe your delivery methodology and project governance.",
+        "Users must be able to upload documents.",
+        "The vendor shall submit monthly reports to the project manager.",
+        "The system must submit audit events to the SIEM.",
+        "The vendor shall provide an electronic copy of the user manual.",
+        "Describe your escalation points of contact.",
+        "The vendor shall deliver hard copies of training material.",
+    ])
+    def test_these_are_answered(self, text):
+        assert classify.kind_of(text) in classify.ANSWERED_KINDS, text
+
+    @pytest.mark.parametrize("text, kind", [
+        ("One electronic copy in PDF format shall be uploaded to the portal.", "submission_rule"),
+        ("Responses must be submitted by 30 November 2026 through the Council tender portal.", "deadline"),
+        ("Proposals are due on 1 December 2026.", "deadline"),
+        ("Responses must not exceed 20 pages.", "instruction"),
+        ("Responses must be in 11 point font with 2 cm margins.", "instruction"),
+        ("Respondents must keep to the order given.", "instruction"),
+    ])
+    def test_and_these_are_about_the_response_itself(self, text, kind):
+        assert classify.kind_of(text) == kind, text
+
+
+class TestRepeatsThatDifferInWhatMatters:
+    def test_a_negation_makes_a_different_requirement(self):
+        yes = "The vendor must store customer personal data in Australia and must retain audit logs for twelve months across all environments"
+        no = yes.replace("must store", "must not store")
+        assert classify.find_duplicates([
+            {"id": "R1", "text": yes, "kind": "mandatory", "response_type": "narrative"},
+            {"id": "R2", "text": no, "kind": "mandatory", "response_type": "narrative"}]) == {}
+
+    def test_a_different_number_makes_a_different_requirement(self):
+        seven = "Data must be stored in Australian data centres with encrypted backups retained for seven years and tested quarterly by an independent auditor annually"
+        assert classify.find_duplicates([
+            {"id": "R1", "text": seven, "kind": "mandatory", "response_type": "narrative"},
+            {"id": "R2", "text": seven.replace("seven", "ten"), "kind": "mandatory", "response_type": "narrative"}]) == {}
+        assert classify.find_duplicates([
+            {"id": "R1", "text": seven, "kind": "mandatory", "response_type": "narrative"},
+            {"id": "R2", "text": seven, "kind": "mandatory", "response_type": "narrative"}]) == {"R2": "R1"}
+
+
+class TestSentencesAreNotCutAtAbbreviations:
+    @pytest.mark.parametrize("text, expected", [
+        ("The vendor shall support formats such as e.g. PDF and Word for all reports.",
+         ["The vendor shall support formats such as e.g. PDF and Word for all reports"]),
+        ("The vendor must be a U.S. company with a local office.", ["The vendor must be a U.S. company with a local office"]),
+        ("The vendor shall provide logs, invoices, etc. on request within 5 days.",
+         ["The vendor shall provide logs, invoices, etc. on request within 5 days"]),
+        ("The vendor shall be a registered Pty Ltd company. The vendor must hold insurance.",
+         ["The vendor shall be a registered Pty Ltd company", "The vendor must hold insurance"]),
+    ])
+    def test_the_whole_requirement_is_kept(self, text, expected):
+        assert [r.text for r in extract_rfp_structure(text).requirements] == expected
+
+
+class TestEverythingIsRedacted:
+    def test_dates_and_submission_rules_do_not_leak_contact_details(self):
+        from app.ingestion.pipeline import redact_extraction
+
+        text = ("Proposals must be emailed to jane.doe@council.gov.au before the deadline.\n"
+                "Responses must be submitted by 30 November 2026; contact john.smith@council.gov.au.")
+        result = redact_extraction(extract_rfp_structure(text))
+        everything = str(result.model_dump())
+        assert "jane.doe@council.gov.au" not in everything and "john.smith@council.gov.au" not in everything

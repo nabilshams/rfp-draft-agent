@@ -632,7 +632,11 @@ _SECTION_RE = re.compile(
 )
 
 _SHALL_MUST_RE = re.compile(r"\b(?:shall|must|(?:is|are|will\s+be)\s+required\s+to)\b", re.IGNORECASE)
-_SENTENCE_END = re.compile(r"[.!?](?=\s)")  # "TLS 1.2" is not the end of a sentence
+# A sentence ends at . ! or ? followed by a capital, digit or quote: not in "TLS 1.2", "e.g. pdf", "etc. and", "U.S. company"
+_SENTENCE_END = re.compile(
+    r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)(?<!\bvs)(?<!\bInc)(?<!\bLtd)(?<!\bPty)(?<!\bNo)(?<!\bapprox)(?<!\b[A-Za-z])"
+    r"[.!?](?=\s+[A-Z0-9\"'“(\[])"
+)
 
 _QUESTION_RE = re.compile(r"^.*\?\s*$", re.MULTILINE)
 
