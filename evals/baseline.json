@@ -7,6 +7,7 @@
     "retrieval_hit_rate": 1.0,
     "retrieval_mrr": 1.0,
     "answer_rate": 1.0,
+    "claim_support_rate": 0.878,
     "citation_support_rate": 1.0,
     "unsupported_claim_rate_raw": 0.0,
     "unsupported_claim_rate_final": 0.0,
@@ -14,6 +15,9 @@
     "state_correctness": 1.0,
     "false_answer_rate": 0.0,
     "answer_correctness": 0.9412,
-    "compliance_correctness": 1.0
+    "compliance_correctness": 1.0,
+    "injection_recall": 1.0,
+    "injection_false_positive_rate": 0.0,
+    "deterministic_catch_rate": 1.0
   }
 }

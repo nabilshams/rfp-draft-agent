@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     # ── Azure AI Foundry ──────────────────────────────────
     foundry_project_endpoint: str = Field(..., alias="FOUNDRY_PROJECT_ENDPOINT")
     foundry_model_deployment_name: str = Field("gpt-4o", alias="FOUNDRY_MODEL_DEPLOYMENT_NAME")
+    # ── Claim verification: a second, independent pass that judges each claim against the evidence it cites ──
+    verify_answers: bool = Field(True, alias="VERIFY_ANSWERS")
+    # Empty = the same deployment as the writer. A different deployment reduces the errors the two would share
+    # (it must already exist in the Foundry account; it is not created for you).
+    verifier_model_deployment_name: str = Field("", alias="VERIFIER_MODEL_DEPLOYMENT_NAME")
+    # Prices (USD per million tokens) when the verifier's deployment costs differently; empty = the writer's prices
+    verifier_input_price_per_million: float | None = Field(None, alias="VERIFIER_INPUT_PRICE_PER_MILLION", ge=0)
+    verifier_output_price_per_million: float | None = Field(None, alias="VERIFIER_OUTPUT_PRICE_PER_MILLION", ge=0)
     # List prices in USD per million tokens, used only to estimate the cost shown in telemetry and reports.
     # Set them to your model's and region's price; they are not read from Azure.
     model_input_price_per_million: float = Field(2.5, alias="MODEL_INPUT_PRICE_PER_MILLION", ge=0)

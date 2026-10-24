@@ -17,10 +17,17 @@
 | False answers | 0.0% |  | unsupported requirements that were answered anyway |
 | Answer correctness | 94.1% |  | answers that state the expected fact and not the stale one |
 | Compliance correctness | 100.0% |  | Yes/Partial/No matches what the sources support |
-| Latency per requirement (mean) | 6.17 s | | recorded from the live run |
-| Latency per requirement (p95) | 10.61 s | | recorded from the live run |
-| Input tokens per requirement | 2070 | | recorded from the live run |
-| Output tokens per requirement | 292 | | recorded from the live run |
+| Claim support | 87.8% |  | the writer's own claims that the verifier found supported by their evidence |
+| Injected errors caught | 100.0% |  | deliberately wrong claims the verifier did not accept (target 80%+) |
+| Correct claims rejected | 0.0% |  | correct claims the verifier did not accept (target 10% or less) |
+| Caught without a model | 100.0% |  | fabricated quotes, uncited claims and wrong figures caught by rules alone |
+| Latency per requirement (mean) | 14.11 s | | recorded from the live run |
+| Latency per requirement (p95) | 19.55 s | | recorded from the live run |
+| Input tokens per requirement | 2320 | | recorded from the live run |
+| Output tokens per requirement | 370 | | recorded from the live run |
+| Verification latency per requirement (mean) | 11.86 s | | recorded from the live run |
+| Verification input tokens per call | 632 | | recorded from the live run |
+| Verification output tokens per call | 98 | | recorded from the live run |
 
 ## Cases
 
@@ -34,6 +41,12 @@ Extracted but not in the golden list:
 
 - council-docx: shall be no longer than 200 words
 
-## Problems (1 of 24 requirements)
+## Injected claims (32; 0 not handled as expected)
 
-- **retail-xlsx / RT-08** The service must provide at least 99.99% availability.: contains forbidden: 99.5%
+All handled as expected.
+
+## Problems (3 of 24 requirements)
+
+- **clinic-pdf / C2** The provider must enforce multi-factor authentication for administrators.: 1 claim(s) the evidence does not support: Multi-factor authentication uses Microsoft Entra ID and supports proto
+- **retail-xlsx / RT-03** Provide online training for administrators and end users.: 1 claim(s) the evidence does not support: Online training sessions are conducted live.
+- **retail-xlsx / RT-05** Describe a similar loyalty platform migration you have delivered.: missing one of: 14 weeks

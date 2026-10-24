@@ -12,6 +12,7 @@ from azure.ai.agents import AgentsClient
 from azure.ai.agents.models import BingGroundingTool, MessageRole
 
 from app import azure_clients
+from app.agents import lifecycle
 from app.config import get_settings
 from app.ingestion.redaction import get_redaction_engine
 from app.telemetry import spans
@@ -107,18 +108,21 @@ def run_agent_prompt(agent_id: str, content: str, *, web_search: bool = False) -
     """
     settings = get_settings()
     with spans.stage(
-        "llm.run", llm__model=settings.foundry_model_deployment_name, web_search=web_search, prompt__chars=len(content)
+        "llm.run", llm__model=lifecycle.model_of(agent_id, settings), web_search=web_search, prompt__chars=len(content)
     ) as span:
         started = time.monotonic()
         result = _run_agent_prompt(agent_id, content, web_search=web_search)
         input_tokens = result.usage.get("input_tokens", 0)
         output_tokens = result.usage.get("output_tokens", 0)
         meter = spans.current_meter()
+        prices = lifecycle.prices_of(agent_id, settings)
         cost = (
-            meter.add_usage(input_tokens, output_tokens)
+            meter.add_usage(input_tokens, output_tokens, prices)
             if meter
             else spans.cost_usd(
-                input_tokens, output_tokens, settings.model_input_price_per_million, settings.model_output_price_per_million
+                input_tokens,
+                output_tokens,
+                *(prices or (settings.model_input_price_per_million, settings.model_output_price_per_million)),
             )
         )
         span.set(

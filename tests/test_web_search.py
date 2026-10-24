@@ -76,9 +76,7 @@ def use_client(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fresh_agent_state(monkeypatch):
-    monkeypatch.setattr(lifecycle, "_draft_agent_id", None)
-    monkeypatch.setattr(lifecycle, "_qa_agent_id", None)
-    monkeypatch.setattr(lifecycle, "_current_instructions_hash", None)
+    lifecycle.reset_cache()
     monkeypatch.setattr(runner.time, "sleep", lambda _s: None)
 
 

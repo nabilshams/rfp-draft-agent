@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.agents import states
-from app.evalkit import metrics, report
+from app.evalkit import metrics, report, verification
 from app.evalkit.golden import GOLDEN_DIR, GoldenIndex, load_cases, load_kb
 from app.evalkit.render import render_rfp
 from app.evalkit.run import DEGRADE_SUFFIX, load_recordings, run_golden
@@ -271,7 +271,7 @@ class TestGoldenFixtures:
         ids = {c.id: {r["id"] for r in c.requirements} for c in load_cases()}
         for variant in ("baseline", "degraded"):
             for case_id, requirement_ids in ids.items():
-                recorded = set(load_recordings(GOLDEN_DIR, variant, case_id))
+                recorded = {key.removesuffix("#verify") for key in load_recordings(GOLDEN_DIR, variant, case_id)}
                 assert recorded <= requirement_ids
                 # Only requirements the model is never asked about (routed, or nothing in the knowledge base) lack one
                 unsupported = {r["id"] for c in load_cases() if c.id == case_id for r in c.requirements if not r["supported"]}
@@ -293,13 +293,13 @@ class TestGoldenFixtures:
 class TestReports:
     def test_the_report_names_what_went_wrong(self, baseline_run):
         markdown = report.to_markdown(report.to_dict(baseline_run))
-        assert "Abstention correctness" in markdown and "retail-xlsx / RT-08" in markdown
-        assert "contains forbidden: 99.5%" in markdown
+        assert "Abstention correctness" in markdown and "Injected errors caught" in markdown
+        assert "clinic-pdf / C2" in markdown and "claim(s) the evidence does not support" in markdown
 
     def test_the_markdown_shows_the_baseline_beside_the_value(self, baseline_run, degraded_run):
         baseline = report.to_dict(baseline_run)["metrics"]
         markdown = report.to_markdown(report.to_dict(degraded_run), baseline)
-        assert "| Unsupported figures (model) | 8.3% | 0.0% |" in markdown
+        assert "| State correctness | 91.7% | 100.0% |" in markdown
 
     def test_cost_appears_when_prices_are_given(self, baseline_run):
         assert "cost_per_requirement_usd" in report.to_dict(baseline_run, input_price=2.5, output_price=10.0)["metrics"]
@@ -351,3 +351,90 @@ class TestCommand:
         assert load_script().main(["--case", "clinic-pdf", "--report-dir", str(tmp_path)]) == 0
         report_json = json.loads((tmp_path / "baseline.json").read_text(encoding="utf-8"))
         assert {r["case"] for r in report_json["requirements"]} == {"clinic-pdf"}
+
+# ── The claim verifier ───────────────────────────────────
+
+
+class TestVerifierEvaluation:
+    def test_the_verifier_meets_the_agreed_targets_on_the_injected_claims(self, baseline_run):
+        m = baseline_run.metrics
+        assert m["injection_recall"] >= verification.TARGET_RECALL
+        assert m["injection_false_positive_rate"] <= verification.TARGET_FALSE_POSITIVE_RATE
+
+    def test_the_injected_set_is_a_real_test(self, baseline_run):
+        outcomes = baseline_run.injections
+        wrong = [o for o in outcomes if o.expect == "wrong"]
+        right = [o for o in outcomes if o.expect == "right"]
+        assert len(wrong) >= 15 and len(right) >= 15
+        # every verdict came from a rule or from a recorded verifier reply: none is "no recording"
+        assert all(o.verdict for o in outcomes)
+        assert {o.verdict for o in right} == {"supported"}
+        assert {o.verdict for o in wrong} >= {"unsupported", "contradicted", "partial"}
+
+    def test_fabricated_quotes_uncited_claims_and_wrong_figures_are_caught_with_no_model_call(self, baseline_run):
+        rules = [o for o in baseline_run.injections if o.kind in verification.RULE_KINDS]
+        assert len(rules) >= 4
+        assert all(o.ok and o.checked_by == "rule" and o.model_calls == 0 for o in rules)
+        assert baseline_run.metrics["deterministic_catch_rate"] == 1.0
+
+    def test_the_verifiers_cost_and_latency_are_reported(self, baseline_run):
+        m = baseline_run.metrics
+        assert m["verifier_calls"] > 0 and m["verification_latency_mean_s"] > 0
+        assert m["verification_input_tokens_per_call"] > 0 and m["verification_output_tokens_per_call"] > 0
+        markdown = report.to_markdown(report.to_dict(baseline_run, input_price=2.5, output_price=10.0))
+        assert "Verification latency per requirement" in markdown and "Estimated verification cost" in markdown
+
+    def test_the_writers_own_claims_on_the_golden_rfps_are_checked_too(self, baseline_run):
+        flagged = [s for s in baseline_run.scores if s.verification == "flagged"]
+        assert flagged and all("the evidence does not support" in " ".join(s.problems) for s in flagged)
+        assert baseline_run.metrics["claim_support_rate"] < 1.0  # an honest baseline: the writer overreaches sometimes
+
+    def test_a_verifier_that_approves_everything_is_noticed(self, tmp_path):
+        # Same claims, but the recorded verifier says "supported" to all of them: recall must collapse
+        golden = tmp_path / "golden"
+        shutil.copytree(GOLDEN_DIR, golden)
+        path = golden / "recordings" / "baseline" / "injections.json"
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        for record in recorded.values():
+            claim_ids = re.findall(r'"id":\s*"(C\d+)"', record["text"]) or ["C1"]
+            record["text"] = json.dumps({"verdicts": [{"id": i, "verdict": "supported", "reason": "ok"} for i in claim_ids]})
+        path.write_text(json.dumps(recorded), encoding="utf-8")
+
+        lax = run_golden(mode="replay", variant="baseline", golden_dir=golden)
+
+        assert lax.metrics["injection_recall"] < verification.TARGET_RECALL
+        assert lax.metrics["deterministic_catch_rate"] == 1.0  # the rules do not depend on the model
+        assert metrics.compare(lax.metrics, json.loads(BASELINE_PATH.read_text(encoding="utf-8"))["metrics"], 0.02)
+
+    def test_a_verifier_that_rejects_everything_is_noticed_too(self, tmp_path):
+        golden = tmp_path / "golden"
+        shutil.copytree(GOLDEN_DIR, golden)
+        path = golden / "recordings" / "baseline" / "injections.json"
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        for record in recorded.values():
+            record["text"] = json.dumps({"verdicts": [{"id": "C1", "verdict": "unsupported", "reason": "no"}]})
+        path.write_text(json.dumps(recorded), encoding="utf-8")
+
+        strict = run_golden(mode="replay", variant="baseline", golden_dir=golden)
+
+        assert strict.metrics["injection_false_positive_rate"] > verification.TARGET_FALSE_POSITIVE_RATE
+
+    def test_a_missing_recording_leaves_the_claim_unchecked_not_accepted(self, tmp_path):
+        golden = tmp_path / "golden"
+        shutil.copytree(GOLDEN_DIR, golden)
+        (golden / "recordings" / "baseline" / "injections.json").write_text("{}", encoding="utf-8")
+        run = run_golden(mode="replay", variant="baseline", golden_dir=golden)
+        right = [o for o in run.injections if o.expect == "right"]
+        assert all(o.verdict is None and not o.ok for o in right)
+        assert run.metrics["injection_false_positive_rate"] == 1.0
+
+    def test_every_injected_case_is_well_formed(self):
+        cases = verification.load_injections(GOLDEN_DIR)
+        assert len({c["id"] for c in cases}) == len(cases)
+        docs = {d["title"]: " ".join(c["text"] for c in d["chunks"]) for d in load_kb()}
+        for case in cases:
+            assert case["expect"] in ("wrong", "right") and case["claim"] and case["requirement"]
+            for item in case.get("evidence", []):
+                assert item["doc"] in docs
+                if case["expect"] == "right":  # a correct claim cites a real quote
+                    assert " ".join(item["quote"].split()).lower() in " ".join(docs[item["doc"]].split()).lower()

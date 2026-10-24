@@ -1,0 +1,236 @@
+{
+  "W05#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"contradicted\", \"reason\": \"E1 states backups are retained for 35 days, contradicting the claim of 90 days.\"}]}",
+    "latency_s": 4.05,
+    "usage": {
+      "input_tokens": 667,
+      "output_tokens": 49
+    }
+  },
+  "W07#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"partial\", \"reason\": \"'The platform supports SAML 2.0 and OpenID Connect,' but no mention of SCIM user provisioning.\"}]}",
+    "latency_s": 4.13,
+    "usage": {
+      "input_tokens": 693,
+      "output_tokens": 50
+    }
+  },
+  "W08#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"unsupported\", \"reason\": \"The passage mentions SOC 2 Type II and ISO 27001 certifications, but not FedRAMP High authorisation.\"}]}",
+    "latency_s": 4.28,
+    "usage": {
+      "input_tokens": 675,
+      "output_tokens": 51
+    }
+  },
+  "W09#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"contradicted\", \"reason\": \"The passage specifies MFA is enforced for administrator accounts, not all user accounts.\"}]}",
+    "latency_s": 4.01,
+    "usage": {
+      "input_tokens": 667,
+      "output_tokens": 44
+    }
+  },
+  "W10#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"unsupported\", \"reason\": \"The passage mentions Australian data centres but does not mention New Zealand at all.\"}]}",
+    "latency_s": 4.1,
+    "usage": {
+      "input_tokens": 686,
+      "output_tokens": 42
+    }
+  },
+  "W12#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"partial\", \"reason\": \"'Severity 1 incidents receive a response within 15 minutes' is supported. 'Escalated to the chief executive' is not mentioned in the evidence.\"}]}",
+    "latency_s": 4.03,
+    "usage": {
+      "input_tokens": 680,
+      "output_tokens": 58
+    }
+  },
+  "W13#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"contradicted\",\n      \"reason\": \"The passage states a typical onboarding takes 12 weeks, not 6 weeks as claimed.\"\n    }\n  ]\n}",
+    "latency_s": 4.07,
+    "usage": {
+      "input_tokens": 670,
+      "output_tokens": 58
+    }
+  },
+  "W14#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"unsupported\",\n      \"reason\": \"The passage only states conformance to WCAG 2.1 level AA; WCAG 2.2 level AAA is not mentioned.\"\n    }\n  ]\n}",
+    "latency_s": 4.04,
+    "usage": {
+      "input_tokens": 685,
+      "output_tokens": 66
+    }
+  },
+  "W15#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"contradicted\", \"reason\": \"Passage states reports are 'audited every year,' not every six months.\"}]}",
+    "latency_s": 4.04,
+    "usage": {
+      "input_tokens": 674,
+      "output_tokens": 45
+    }
+  },
+  "W16#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"unsupported\",\n      \"reason\": \"The passage specifies online role-based training with recordings, not on-site delivery or a competency exam.\"\n    }\n  ]\n}",
+    "latency_s": 4.11,
+    "usage": {
+      "input_tokens": 657,
+      "output_tokens": 57
+    }
+  },
+  "R01#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states that 'all customer data is encrypted at rest with AES-256 and in transit with TLS 1.2 or higher'.\"}]}",
+    "latency_s": 4.11,
+    "usage": {
+      "input_tokens": 690,
+      "output_tokens": 56
+    }
+  },
+  "R02#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage explicitly states 'keys are rotated every 90 days and are stored in a hardware-backed key vault'.\"}\n  ]\n}",
+    "latency_s": 4.08,
+    "usage": {
+      "input_tokens": 690,
+      "output_tokens": 56
+    }
+  },
+  "R03#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage explicitly states the vendor holds SOC 2 Type II and ISO 27001 certifications.\"}]}",
+    "latency_s": 4.03,
+    "usage": {
+      "input_tokens": 679,
+      "output_tokens": 46
+    }
+  },
+  "R04#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"Data is stored in Australian data centres in Sydney and Melbourne as stated in the passage.\"}]}",
+    "latency_s": 4.06,
+    "usage": {
+      "input_tokens": 671,
+      "output_tokens": 44
+    }
+  },
+  "R05#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"supported\",\n      \"reason\": \"The passage states 'Backups stay in Australia and are retained for 35 days,' matching the claim.\"\n    }\n  ]\n}",
+    "latency_s": 4.17,
+    "usage": {
+      "input_tokens": 669,
+      "output_tokens": 59
+    }
+  },
+  "R06#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states a '99.95% monthly availability commitment' for the production service.\"}]}",
+    "latency_s": 4.27,
+    "usage": {
+      "input_tokens": 665,
+      "output_tokens": 45
+    }
+  },
+  "R07#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The evidence states: 'Support is available 24 hours a day, 7 days a week by phone and through the web portal.'\"}]\n}",
+    "latency_s": 4.01,
+    "usage": {
+      "input_tokens": 676,
+      "output_tokens": 57
+    }
+  },
+  "R08#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"supported\",\n      \"reason\": \"\\\"Severity 1 incidents receive a response within 15 minutes.\\\" is explicitly stated.\"\n    }\n  ]\n}",
+    "latency_s": 3.98,
+    "usage": {
+      "input_tokens": 672,
+      "output_tokens": 54
+    }
+  },
+  "R09#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\n      \"id\": \"C1\",\n      \"verdict\": \"supported\",\n      \"reason\": \"The passage states 'Every customer has a named service delivery manager'.\"\n    }\n  ]\n}",
+    "latency_s": 4.11,
+    "usage": {
+      "input_tokens": 650,
+      "output_tokens": 52
+    }
+  },
+  "R10#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"\\\"The platform supports single sign-on through Microsoft Entra ID using SAML 2.0 and OpenID Connect.\\\" confirms the claim.\"}]}",
+    "latency_s": 4.0,
+    "usage": {
+      "input_tokens": 688,
+      "output_tokens": 54
+    }
+  },
+  "R11#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states 'customer administrators can define custom roles.'\"}]}",
+    "latency_s": 3.97,
+    "usage": {
+      "input_tokens": 670,
+      "output_tokens": 38
+    }
+  },
+  "R12#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states 'A typical onboarding takes 12 weeks from contract signature'.\"}]}",
+    "latency_s": 4.01,
+    "usage": {
+      "input_tokens": 672,
+      "output_tokens": 43
+    }
+  },
+  "R13#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"Passage confirms role-based online training for administrators and end users, and mentions that recordings are provided afterwards.\"}\n  ]\n}",
+    "latency_s": 4.02,
+    "usage": {
+      "input_tokens": 666,
+      "output_tokens": 54
+    }
+  },
+  "R14#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [\n    {\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage states: 'The web application conforms to WCAG 2.1 level AA.'\"}\n  ]\n}",
+    "latency_s": 4.1,
+    "usage": {
+      "input_tokens": 664,
+      "output_tokens": 52
+    }
+  },
+  "R15#verify": {
+    "status": "completed",
+    "text": "{\"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"\\\"Multi-factor authentication is enforced for all administrator accounts.\\\" directly confirms the claim.\"}]}",
+    "latency_s": 4.04,
+    "usage": {
+      "input_tokens": 667,
+      "output_tokens": 42
+    }
+  },
+  "R16#verify": {
+    "status": "completed",
+    "text": "{\n  \"verdicts\": [{\"id\": \"C1\", \"verdict\": \"supported\", \"reason\": \"The passage explicitly mentions the four phases and fortnightly governance meetings, matching the claim exactly.\"}]\n}",
+    "latency_s": 4.5,
+    "usage": {
+      "input_tokens": 689,
+      "output_tokens": 47
+    }
+  }
+}

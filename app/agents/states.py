@@ -213,26 +213,25 @@ def _quote_in(quote: Any, content: str) -> bool:
     return bool(fragments) and all(f in content for f in fragments)
 
 
-def count_supported_citations(answer: dict[str, Any], docs: list[dict[str, Any]]) -> tuple[int, int]:
-    """(evidence entries, entries whose quote really appears in the retrieved document they cite).
+def locate_passage(entry: dict[str, Any], docs: list[dict[str, Any]]) -> str | None:
+    """The retrieved text that really contains an evidence entry's quote, or ``None``: the quote is not in the source.
 
     Links are compared as the citation check does (percent-encoding, trailing slash, a name cut at a parenthesis).
+    No model is involved, so a fabricated quote is caught here.
     """
-    contents: dict[str, list[str]] = {}
+    url = str(entry.get("source_url", ""))
     for doc in docs:
-        url = kb_search._normalize_url(str(doc.get("source_url", "")))
-        if url:
-            contents.setdefault(url, []).append(_squash(doc.get("content", "")))
+        if kb_search._is_allowed(url, {kb_search._normalize_url(str(doc.get("source_url", "")))}):
+            content = str(doc.get("content", ""))
+            if _quote_in(entry.get("quote", ""), _squash(content)):
+                return content
+    return None
+
+
+def count_supported_citations(answer: dict[str, Any], docs: list[dict[str, Any]]) -> tuple[int, int]:
+    """(evidence entries, entries whose quote really appears in the retrieved document they cite)."""
     entries = [e for e in answer.get("evidence", []) if isinstance(e, dict)]
-    supported = 0
-    for entry in entries:
-        url = str(entry.get("source_url", ""))
-        if any(
-            kb_search._is_allowed(url, {known}) and any(_quote_in(entry.get("quote", ""), text) for text in texts)
-            for known, texts in contents.items()
-        ):
-            supported += 1
-    return len(entries), supported
+    return len(entries), sum(1 for entry in entries if locate_passage(entry, docs) is not None)
 
 
 def finalize(
