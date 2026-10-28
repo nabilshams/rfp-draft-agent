@@ -117,7 +117,7 @@ msrest==0.7.1
     # via azure-monitor-opentelemetry-exporter
 oauthlib==4.0.0
     # via requests-oauthlib
-openai==3.35.1
+openai==3.37.0
     # via
     #   -r requirements.in
     #   azure-ai-projects
