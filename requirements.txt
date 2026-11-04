@@ -229,13 +229,13 @@ psutil==7.2.2
     # via azure-monitor-opentelemetry-exporter
 pycparser==3.11
     # via cffi
-pydantic==2.14.1
+pydantic==2.14.2
     # via
     #   -r requirements.in
     #   fastapi
     #   openai
     #   pydantic-settings
-pydantic-core==2.50.1
+pydantic-core==2.50.2
     # via pydantic
 pydantic-settings==2.16.0
     # via -r requirements.in
