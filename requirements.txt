@@ -15,7 +15,7 @@ azure-ai-agents==1.1.0
     # via -r requirements.in
 azure-ai-inference==1.0.0b9
     # via -r requirements.in
-azure-ai-projects==2.9.0
+azure-ai-projects==2.10.0
     # via -r requirements.in
 azure-core==1.41.0
     # via
@@ -34,7 +34,7 @@ azure-core-tracing-opentelemetry==1.0.0b13
     # via azure-monitor-opentelemetry
 azure-cosmos==4.17.1
     # via -r requirements.in
-azure-identity==1.26.0
+azure-identity==1.27.0
     # via
     #   -r requirements.in
     #   azure-ai-projects
@@ -47,7 +47,7 @@ azure-monitor-opentelemetry-exporter==1.0.0b58
     #   azure-monitor-opentelemetry
 azure-search-documents==12.1.0b2
     # via -r requirements.in
-azure-storage-blob==12.31.0
+azure-storage-blob==12.31.1
     # via
     #   -r requirements.in
     #   azure-ai-projects
@@ -117,7 +117,7 @@ msrest==0.7.1
     # via azure-monitor-opentelemetry-exporter
 oauthlib==4.0.0
     # via requests-oauthlib
-openai==3.35.1
+openai==3.42.0
     # via
     #   -r requirements.in
     #   azure-ai-projects
